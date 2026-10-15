@@ -1,7 +1,12 @@
+#include <errno.h>
+#include <pthread.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "config.h"
+#include "mutex.h"
 #include "rng.h"
+#include "sem.h"
 #include "unit.h"
 
 static void TestStageCapacity(void) {
@@ -64,10 +69,97 @@ static void TestSabotageNames(void) {
     CHECK(ConfigParseSabotage("boom", &s) == -1);
 }
 
+static void TestLockdepCatchesNesting(void) {
+    LockdepSetFatal(0);
+    Mutex a, b, bus;
+    MutexInit(&a, RANK_STAGE, "stage A");
+    MutexInit(&b, RANK_STAGE, "stage B");
+    MutexInit(&bus, RANK_BUS, "bus");
+    long before = LockdepViolations();
+    MutexLock(&a);
+    MutexLock(&bus);
+    MutexUnlock(&bus);
+    MutexUnlock(&a);  // по рангу - можно
+    CHECK(LockdepViolations() == before);
+    MutexLock(&a);
+    MutexLock(&b);
+    MutexUnlock(&b);
+    MutexUnlock(&a);  // два мьютекса стадий
+    CHECK(LockdepViolations() == before + 1);
+    CHECK(LockdepHeldCount() == 0);
+    MutexDestroy(&a);
+    MutexDestroy(&b);
+    MutexDestroy(&bus);
+}
+
+typedef struct {
+    Sem go, done;
+    int flag;
+} SemCtx;
+
+static void *SemWorker(void *arg) {
+    SemCtx *c = arg;
+    SemWait(&c->go);
+    c->flag = 1;
+    SemPost(&c->done);
+    return NULL;
+}
+
+static void TestSemAcrossThreads(void) {
+    SemCtx c = {.flag = 0};
+    CHECK(SemOpen(&c.go, 0) == 0);
+    CHECK(SemOpen(&c.done, 0) == 0);
+    pthread_t t;
+    CHECK(pthread_create(&t, NULL, SemWorker, &c) == 0);
+    SemPost(&c.go);
+    SemWait(&c.done);
+    CHECK(c.flag == 1);
+    pthread_join(t, NULL);
+    SemClose(&c.go);
+    SemClose(&c.done);
+}
+
+static void TestSemTryWait(void) {
+    Sem s;
+    CHECK(SemOpen(&s, 1) == 0);
+    CHECK(SemTryWait(&s) == 0);
+    CHECK(SemTryWait(&s) == -1);
+    SemPost(&s);
+    CHECK(SemTryWait(&s) == 0);
+    SemClose(&s);
+}
+
+static void TestSemNoLeak(void) {
+    long before = SemOpenCount();
+    Sem s;
+    CHECK(SemOpen(&s, 0) == 0);
+    CHECK(SemOpenCount() == before + 1);
+    SemClose(&s);
+    CHECK(SemOpenCount() == before);
+}
+
+static void TestSemFailHook(void) {
+    Sem s;
+    long before = SemOpenCount();
+    setenv("CARWASH_FAIL_SEM_AFTER", "0", 1);  // NOLINT(concurrency-mt-unsafe)
+    CHECK(SemOpen(&s, 0) == -1);
+    CHECK(errno == ENOSPC);
+    unsetenv("CARWASH_FAIL_SEM_AFTER");  // NOLINT(concurrency-mt-unsafe)
+    // крючок перечитывается при каждом вызове
+    CHECK(SemOpen(&s, 0) == 0);
+    SemClose(&s);
+    CHECK(SemOpenCount() == before);
+}
+
 int main(void) {
     RUN(TestStageCapacity);
     RUN(TestBadCapacity);
     RUN(TestRngStreams);
     RUN(TestSabotageNames);
+    RUN(TestLockdepCatchesNesting);
+    RUN(TestSemAcrossThreads);
+    RUN(TestSemTryWait);
+    RUN(TestSemNoLeak);
+    RUN(TestSemFailHook);
     return UnitSummary();
 }

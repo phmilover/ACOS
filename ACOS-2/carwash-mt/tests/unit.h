@@ -5,10 +5,12 @@
 #ifndef UNIT_H
 #define UNIT_H
 
+#include <stdatomic.h>
 #include <stdio.h>
 
-static int unitChecks = 0;
-static int unitFailed = 0;
+/// Счётчики атомарные: CHECK зовут и из рабочих потоков.
+static _Atomic int unitChecks = 0;
+static _Atomic int unitFailed = 0;
 
 /// Проверяет условие; при провале печатает файл:строку и считает ошибку.
 #define CHECK(cond)                                                                                \
@@ -23,15 +25,16 @@ static int unitFailed = 0;
 /// Запускает тест-функцию и печатает её имя.
 #define RUN(fn)                                                                                    \
     do {                                                                                           \
-        int before_ = unitFailed;                                                                  \
+        int before_ = atomic_load(&unitFailed);                                                    \
         fn();                                                                                      \
-        printf("%s %s\n", unitFailed == before_ ? "PASS" : "FAIL", #fn);                           \
+        printf("%s %s\n", atomic_load(&unitFailed) == before_ ? "PASS" : "FAIL", #fn);             \
     } while (0)
 
 /// Итог прогона. @return 0, если провалов нет, иначе 1 (код выхода программы)
 static inline int UnitSummary(void) {
-    printf("%d checks, %d failed\n", unitChecks, unitFailed);
-    return unitFailed ? 1 : 0;
+    int failed = atomic_load(&unitFailed);
+    printf("%d checks, %d failed\n", atomic_load(&unitChecks), failed);
+    return failed ? 1 : 0;
 }
 
 #endif
