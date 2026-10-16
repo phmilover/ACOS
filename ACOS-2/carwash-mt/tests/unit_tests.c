@@ -4,14 +4,17 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 
 #include "config.h"
+#include "events.h"
 #include "mutex.h"
 #include "rng.h"
 #include "sem.h"
 #include "sim.h"
 #include "soft_assert.h"
 #include "unit.h"
+#include "view_log.h"
 
 static void TestStageCapacity(void) {
     Config c;
@@ -637,6 +640,142 @@ static void TestStaleReasonDropped(void) {
     CHECK(c.seen.kind == WAIT_QUEUE && c.seen.stage == 7);
 }
 
+/// Конфигурация normal (встроенная): prewash, tunnel, wax, dry.
+static void LoadNormal(Config *c) {
+    char err[256];
+    ConfigDefaults(c);
+    CHECK(ConfigParseText(c, CONFIG_BUILTIN, err, sizeof err) == 0);
+}
+
+static void StartBusSim(void) {
+    SimOptions o = {0};
+    CHECK(SimInit(&o) == 0);
+}
+
+#define BUS_THREADS 8
+#define BUS_EMITS   1000
+
+static long busLastSeq, busCount, busViolations;  // трогает только слушатель, под мьютексом шины
+
+static void CountingListener(const Event *e) {
+    if (e->seq != busLastSeq + 1) {
+        ++busViolations;
+    }
+    busLastSeq = e->seq;
+    ++busCount;
+}
+
+static void *EmitterMain(void *arg) {
+    for (int i = 0; i < BUS_EMITS; ++i) {
+        EV(EV_ARRIVE, *(const int *)arg, -1, -1, -1, 0);
+    }
+    return NULL;
+}
+
+/// 8 потоков × 1000 событий: номера идут строго подряд, ничего не потеряно.
+static void TestConcurrentEmitOrdered(void) {
+    Config c;
+    LoadNormal(&c);
+    StartBusSim();
+    EventsInit(&c);
+    busLastSeq = -1;
+    busCount = busViolations = 0;
+    EventsSubscribe(CountingListener);
+    pthread_t th[BUS_THREADS];
+    int ids[BUS_THREADS];
+    for (int i = 0; i < BUS_THREADS; ++i) {
+        ids[i] = i;
+        CHECK(pthread_create(&th[i], NULL, EmitterMain, &ids[i]) == 0);
+    }
+    for (int i = 0; i < BUS_THREADS; ++i) {
+        pthread_join(th[i], NULL);
+    }
+    CHECK(busCount == (long)BUS_THREADS * BUS_EMITS);
+    CHECK(busViolations == 0);
+}
+
+static void TestDescribeTexts(void) {
+    Config c;
+    char buf[200];
+    LoadNormal(&c);
+    EventsInit(&c);
+    Event move = {.type = EV_MOVE, .car = 6, .stage = 1, .post = -1, .program = 2, .arg = 0};
+    CHECK(EventDescribe(&move, buf, sizeof buf) > 0);
+    CHECK(strcmp(buf, "car #7 moves prewash -> tunnel") == 0);
+    Event fail = {.type = EV_FAIL, .car = 2, .stage = 1, .post = 0, .program = 1, .arg = 9};
+    EventDescribe(&fail, buf, sizeof buf);
+    CHECK(strstr(buf, "BREAKS DOWN with car #3") != NULL);
+    fail.car = -1;
+    EventDescribe(&fail, buf, sizeof buf);
+    CHECK(strstr(buf, "BREAKS DOWN (repair 9 min)") != NULL);
+    Event done = {.type = EV_DONE, .car = 0, .stage = -1, .post = -1, .program = 2, .arg = 30};
+    EventDescribe(&done, buf, sizeof buf);
+    CHECK(strstr(buf, "is clean!") != NULL);
+    CHECK(strstr(buf, "Premium done in 30 min") != NULL);  // программа берётся из события
+    Event prog = {.type = EV_PROGRAM, .car = 0, .stage = -1, .post = -1, .program = 2, .arg = 2};
+    EventDescribe(&prog, buf, sizeof buf);
+    CHECK(strcmp(buf, "car #1 chooses Premium (prewash > tunnel > wax > dry)") == 0);
+    char clock[16];
+    EventClock(17, clock, sizeof clock);
+    CHECK(strcmp(clock, "08:17") == 0);
+    EventClock((24 * 60) + 17, clock, sizeof clock);
+    CHECK(strcmp(clock, "d2 08:17") == 0);
+}
+
+static char srcSeen[40];  // слушатель пишет, тест читает после Emit (в том же потоке)
+
+static void SourceListener(const Event *e) {
+    EventSource(e, srcSeen, sizeof srcSeen);
+}
+
+static void TestSourceNames(void) {
+    Config c;
+    LoadNormal(&c);
+    StartBusSim();
+    EventsInit(&c);
+    EventsSubscribe(SourceListener);
+    SimThread car = {.kind = TH_CAR, .id = 6};
+    SimThread post = {.kind = TH_POST, .id = (1 * MAX_POSTS) + 1};  // tunnel, второй пост
+    SimThread coord = {.kind = TH_COORD, .id = 0};
+    EventsSetSource(&car);
+    EV(EV_ARRIVE, 6, -1, -1, -1, 0);
+    CHECK(strcmp(srcSeen, "car #7") == 0);
+    EventsSetSource(&post);
+    EV(EV_ENTER, 6, 1, 1, 0, 0);
+    CHECK(strcmp(srcSeen, "post tunnel.2") == 0);
+    EventsSetSource(&coord);
+    EV(EV_CLOSE, -1, -1, -1, -1, 0);
+    CHECK(strcmp(srcSeen, "coordinator") == 0);
+    EventsSetSource(NULL);  // главный поток, не звавший EventsSetSource, - то же самое
+    EV(EV_CLOSE, -1, -1, -1, -1, 0);
+    CHECK(strcmp(srcSeen, "main") == 0);
+}
+
+/// Лента: формат строки без колонки и с колонкой источника.
+static void TestViewLogFormat(void) {
+    Config c;
+    LoadNormal(&c);
+    StartBusSim();
+    int fd[2];
+    CHECK(pipe(fd) == 0);
+    SimThread car = {.kind = TH_CAR, .id = 6};
+    for (int column = 0; column <= 1; ++column) {
+        EventsInit(&c);
+        ViewLogInit(fd[1], 0, -1, column);
+        EventsSubscribe(ViewLogListener);
+        EventsSetSource(&car);
+        EV(EV_MOVE, 6, 1, -1, 2, 0);
+        char buf[200] = "";
+        ssize_t n = read(fd[0], buf, sizeof buf - 1);
+        CHECK(n > 0);
+        CHECK(strcmp(buf, column ? "[08:00] car #7         | car #7 moves prewash -> tunnel\n"
+                                 : "[08:00] car #7 moves prewash -> tunnel\n") == 0);
+    }
+    EventsSetSource(NULL);
+    close(fd[0]);
+    close(fd[1]);
+}
+
 int main(void) {
     RUN(TestStageCapacity);
     RUN(TestBadCapacity);
@@ -657,5 +796,9 @@ int main(void) {
     RUN(TestStaleReasonDropped);
     RUN(TestDeterministicOrder);
     RUN(TestNoLocksWhenParking);
+    RUN(TestConcurrentEmitOrdered);
+    RUN(TestDescribeTexts);
+    RUN(TestSourceNames);
+    RUN(TestViewLogFormat);
     return UnitSummary();
 }
