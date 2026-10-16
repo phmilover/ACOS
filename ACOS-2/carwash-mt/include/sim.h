@@ -109,7 +109,9 @@ void SimExit(SimThread *self);
 SimStatus SimSleep(SimThread *self, int minutes);
 
 /// Паркуется до SimWake. @param why причина ожидания; если до парковки другой поток уже
-/// задал причину через SimSetReason, остаётся она, а @p why не используется
+/// задал причину через SimSetReason, остаётся она, а @p why не используется. Запомненная
+/// причина относится только к ближайшему ожиданию: её сбрасывают SimPark (и при возврате
+/// сразу по запомненному SimWake), SimSleep и SimExit
 SimStatus SimPark(SimThread *self, WaitReason why);
 
 /// Меняет причину ожидания: припаркованному - сразу; работающему или готовому - запоминает

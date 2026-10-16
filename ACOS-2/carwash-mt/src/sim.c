@@ -197,6 +197,7 @@ void SimExit(SimThread *self) {
     }
     self->state = ST_DONE;
     self->wakePending = 0;
+    self->reasonPending = 0;
     if (!atomic_load(&stopping)) {
         AfterStop();
     }
@@ -213,6 +214,7 @@ SimStatus SimSleep(SimThread *self, int minutes) {
         MutexUnlock(&mu);
         return SIM_STOP;
     }
+    self->reasonPending = 0;  // сон - другое ожидание, старая причина к нему не относится
     self->state = ST_SLEEPING;
     self->wakeAt = now + minutes;
     self->why = (WaitReason){.kind = WAIT_TIME, .stage = -1, .post = -1};
@@ -230,6 +232,7 @@ SimStatus SimPark(SimThread *self, WaitReason why) {
     }
     if (self->wakePending) {  // разбудили раньше, чем уснул
         self->wakePending = 0;
+        self->reasonPending = 0;  // причина относилась к этому ожиданию, оно уже кончилось
         MutexUnlock(&mu);
         return SIM_OK;
     }

@@ -547,6 +547,8 @@ static void TestWakeBeforePark(void) {
 typedef struct {
     SimThread a, b;
     _Atomic int reasonSet;  // B уже вызвал SimSetReason(A)
+    int alsoWake;           // B после причины ещё и будит A, пока тот работает
+    SimStatus firstPark;    // при alsoWake: первая парковка A (должна пройти сразу)
     WaitReason seen;        // причина A, которую увидел крючок в минуту 0
     int seenState;
 } ReasonCtx;
@@ -557,7 +559,12 @@ static void *ReasonParker(void *arg) {
         while (!atomic_load(&c->reasonSet)) {
             // A ещё работает, когда другой поток задаёт ему причину
         }
-        SimPark(&c->a, (WaitReason){.kind = WAIT_QUEUE, .stage = 0, .post = -1});
+        if (c->alsoWake) {
+            c->firstPark = SimPark(&c->a, (WaitReason){.kind = WAIT_OPERATION});
+            SimPark(&c->a, (WaitReason){.kind = WAIT_QUEUE, .stage = 7, .post = -1});
+        } else {
+            SimPark(&c->a, (WaitReason){.kind = WAIT_QUEUE, .stage = 0, .post = -1});
+        }
     }
     SimExit(&c->a);
     return NULL;
@@ -567,6 +574,9 @@ static void *ReasonSetter(void *arg) {
     ReasonCtx *c = arg;
     if (SimBegin(&c->b) == SIM_OK) {
         SimSetReason(&c->a, (WaitReason){.kind = WAIT_OPERATION, .stage = 3, .post = 1});
+        if (c->alsoWake) {
+            SimWake(&c->a);
+        }
         atomic_store(&c->reasonSet, 1);
         if (SimSleep(&c->b, 1) == SIM_OK) {
             SimWake(&c->a);
@@ -591,27 +601,40 @@ static int ReasonHook(int now, int nextWake, void *ctx) {
     return nextWake != -1;
 }
 
-/// SimSetReason работающему потоку не затирается аргументом его следующего SimPark.
-static void TestReasonBeforePark(void) {
-    ReasonCtx c = {.seenState = -1};
-    SimOptions o = {.deterministic = 0, .delayMs = 0, .hook = ReasonHook, .ctx = &c};
+static void RunReason(ReasonCtx *c) {
+    SimOptions o = {.deterministic = 0, .delayMs = 0, .hook = ReasonHook, .ctx = c};
     long sems = FreshSim(&o, 0);
     pthread_t ta, tb, clock;
-    CHECK(SimThreadInit(&c.a, TH_CAR, 1, "car A", 0) == 0);
-    CHECK(SimThreadInit(&c.b, TH_POST, 2, "post B", 0) == 0);
-    SimSpawned(&c.a);
-    SimSpawned(&c.b);
-    CHECK(pthread_create(&ta, NULL, ReasonParker, &c) == 0);
-    CHECK(pthread_create(&tb, NULL, ReasonSetter, &c) == 0);
+    CHECK(SimThreadInit(&c->a, TH_CAR, 1, "car A", 0) == 0);
+    CHECK(SimThreadInit(&c->b, TH_POST, 2, "post B", 0) == 0);
+    SimSpawned(&c->a);
+    SimSpawned(&c->b);
+    CHECK(pthread_create(&ta, NULL, ReasonParker, c) == 0);
+    CHECK(pthread_create(&tb, NULL, ReasonSetter, c) == 0);
     CHECK(pthread_create(&clock, NULL, SimClockMain, NULL) == 0);
     pthread_join(clock, NULL);
     pthread_join(ta, NULL);
     pthread_join(tb, NULL);
-    SimThreadDestroy(&c.a);
-    SimThreadDestroy(&c.b);
+    SimThreadDestroy(&c->a);
+    SimThreadDestroy(&c->b);
     CHECK(SemOpenCount() == sems);
+}
+
+/// SimSetReason работающему потоку не затирается аргументом его следующего SimPark.
+static void TestReasonBeforePark(void) {
+    ReasonCtx c = {.seenState = -1};
+    RunReason(&c);
     CHECK(c.seenState == ST_PARKED);
     CHECK(c.seen.kind == WAIT_OPERATION && c.seen.stage == 3 && c.seen.post == 1);
+}
+
+/// Причина, заданная перед пробуждением, не переживает ожидание, которое прошло сразу.
+static void TestStaleReasonDropped(void) {
+    ReasonCtx c = {.seenState = -1, .alsoWake = 1, .firstPark = SIM_STOP};
+    RunReason(&c);
+    CHECK(c.firstPark == SIM_OK);
+    CHECK(c.seenState == ST_PARKED);
+    CHECK(c.seen.kind == WAIT_QUEUE && c.seen.stage == 7);
 }
 
 int main(void) {
@@ -631,6 +654,7 @@ int main(void) {
     RUN(TestStopWakesParked);
     RUN(TestWakeBeforePark);
     RUN(TestReasonBeforePark);
+    RUN(TestStaleReasonDropped);
     RUN(TestDeterministicOrder);
     RUN(TestNoLocksWhenParking);
     return UnitSummary();
