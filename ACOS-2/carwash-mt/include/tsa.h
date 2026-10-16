@@ -21,6 +21,16 @@
 #define GUARDED_BY(x) TSA_ATTR(guarded_by(x))
 /// То же для данных, на которые указывает поле-указатель.
 #define PT_GUARDED_BY(x) TSA_ATTR(pt_guarded_by(x))
+/// GUARDED_BY для поля структуры, которое охраняет соседнее поле-мьютекс. Apple clang 21 в C не
+/// видит в атрибуте поля имена соседних полей: `int x GUARDED_BY(m)` он связывает не с s->m, а с
+/// неким отдельным «m» и ругается на каждый доступ даже под захваченным s->m. Поэтому под Apple
+/// clang пометка пустая (проверка таких полей пропадает, REQUIRES(st->m) у функций остаётся),
+/// а clang из Homebrew (LLVM 23) и clang-tidy проверяют поля по-настоящему.
+#ifdef __apple_build_version__
+#define MEMBER_GUARDED_BY(x)
+#else
+#define MEMBER_GUARDED_BY(x) GUARDED_BY(x)
+#endif
 /// Функцию можно звать только при захваченных мьютексах.
 #define REQUIRES(...) TSA_ATTR(requires_capability(__VA_ARGS__))
 /// Функция захватывает мьютексы и не отпускает их.

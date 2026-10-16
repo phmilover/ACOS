@@ -8,11 +8,14 @@
 
 #include "config.h"
 #include "events.h"
+#include "line.h"
+#include "memory.h"
 #include "mutex.h"
 #include "rng.h"
 #include "sem.h"
 #include "sim.h"
 #include "soft_assert.h"
+#include "stage.h"
 #include "unit.h"
 #include "view_log.h"
 
@@ -776,6 +779,551 @@ static void TestViewLogFormat(void) {
     close(fd[1]);
 }
 
+// ---- стадии: бронь, переезд, эстафета (однопоточно: машины - записи без потоков) ----
+
+/// Как data/capacity.cfg: один пост сушки на две машины.
+static const char *CAPACITY_CFG = "stage = prewash 1 3 5 3\nstage = tunnel 2 6 9 2\n"
+                                  "stage = wax 1 4 6 2\nstage = dry 1 3 5 2 2\n"
+                                  "program = Express 40 1 tunnel dry\n"
+                                  "program = Standard 40 2 prewash tunnel dry\n"
+                                  "program = Premium 20 3 prewash tunnel wax dry\n";
+/// Как data/zero-buffer.cfg: накопителей нет.
+static const char *ZERO_CFG = "stage = prewash 1 3 5 0\nstage = tunnel 2 6 9 0\n"
+                              "stage = wax 1 4 6 0\nstage = dry 1 3 5 0\n"
+                              "program = Express 40 1 tunnel dry\n"
+                              "program = Standard 40 2 prewash tunnel dry\n"
+                              "program = Premium 20 3 prewash tunnel wax dry\n";
+/// Как data/priority.cfg: один пост тоннеля, очередь 4.
+static const char *PRIORITY_CFG = "stage = prewash 1 3 5 4\nstage = tunnel 1 6 8 4\n"
+                                  "stage = wax 1 4 6 2\nstage = dry 1 3 5 4\n"
+                                  "program = Express 40 1 tunnel dry\n"
+                                  "program = Standard 40 2 prewash tunnel dry\n"
+                                  "program = Premium 20 3 prewash tunnel wax dry\n"
+                                  "priority = program\n";
+/// Одна стадия: один пост, очередь на одну машину.
+static const char *ONE_CFG = "stage = a 1 3 5 1\nprogram = P 1 1 a\n";
+/// Как data/dead-stage.cfg: у wax нет постов.
+static const char *DEAD_CFG = "stage = prewash 1 3 5 3\nstage = tunnel 2 6 9 2\n"
+                              "stage = wax 0 4 6 2\nstage = dry 2 3 5 3\n"
+                              "program = Express 40 1 tunnel dry\n"
+                              "program = Standard 40 2 prewash tunnel dry\n"
+                              "program = Premium 20 3 prewash tunnel wax dry\n";
+
+enum { P_EXPRESS = 0, P_STANDARD = 1, P_PREMIUM = 2 };  // программы normal и производных
+enum { S_PREWASH = 0, S_TUNNEL = 1, S_WAX = 2, S_DRY = 3 };
+
+#define EV_LOG_MAX 256
+static Event evLog[EV_LOG_MAX];  // слушатель пишет в том же потоке, что и тест
+static int evCount;
+
+static void RecordListener(const Event *e) {
+    if (evCount < EV_LOG_MAX) {
+        evLog[evCount++] = *e;
+    }
+}
+
+/// @return номер первого события type машины car в журнале теста или -1
+static int FindEv(EventType type, int car) {
+    for (int i = 0; i < evCount; ++i) {
+        if (evLog[i].type == type && evLog[i].car == car) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static Config lineCfg;  // линия большая - держим статически
+static Line line;
+
+/// Конфигурация из текста (NULL - встроенная normal).
+static Config *LoadLineCfg(const char *text) {
+    char err[256];
+    ConfigDefaults(&lineCfg);
+    CHECK(ConfigParseText(&lineCfg, text ? text : CONFIG_BUILTIN, err, sizeof err) == 0);
+    CHECK(ConfigValidate(&lineCfg, err, sizeof err) == 0);
+    return &lineCfg;
+}
+
+/// Свежая модель, шина с записью событий и линия по lineCfg.
+static Line *OpenLine(void) {
+    SimOptions o = {0};
+    CHECK(SimInit(&o) == 0);
+    EventsInit(&lineCfg);
+    EventsSubscribe(RecordListener);
+    evCount = 0;
+    CHECK(LineInit(&line, &lineCfg) == 0);
+    return &line;
+}
+
+/// Машина без потока (только семафор), в реестре линии; LineFree её освободит.
+static Car *NewCar(Line *l, int program) {
+    Car *car = calloc(1, sizeof *car);
+    if (car == NULL) {
+        abort();
+    }
+    MutexLock(&l->registry);
+    if (l->carCount == l->carCap) {
+        l->carCap = l->carCap ? l->carCap * 2 : 8;
+        l->cars = (Car **)CheckedRealloc((void *)l->cars, (size_t)l->carCap * sizeof *l->cars);
+    }
+    car->id = l->carCount;
+    l->cars[l->carCount++] = car;
+    MutexUnlock(&l->registry);
+    char name[24];
+    snprintf(name, sizeof name, "car #%d", car->id + 1);
+    CHECK(SimThreadInit(&car->th, TH_CAR, car->id, name, 0) == 0);
+    car->program = program;
+    car->place = CAR_ARRIVING;
+    car->stage = car->post = car->seat = -1;
+    car->res = RES_NONE;
+    car->resStage = car->resPost = car->resSeat = -1;
+    car->ticket = -1;
+    car->finished = -1;
+    return car;
+}
+
+/// StageAdmit на стадии s и, если место дали и @p commit, сразу StageCommit с въезда.
+static Admit Enter(Line *l, int s, Car *car, int mayWait, int commit) {
+    Stage *st = &l->stage[s];
+    MutexLock(&st->m);
+    Admit a = StageAdmit(l, st, car, mayWait);
+    if (commit && a != ADMIT_FULL) {
+        StageCommit(l, st, car, -1);
+    }
+    MutexUnlock(&st->m);
+    return a;
+}
+
+/// Операция машины на стадии s закончилась (как у поста), и машина уезжает.
+static void Vacate(Line *l, int s, Car *car) {
+    Stage *st = &l->stage[s];
+    MutexLock(&st->m);
+    if (car->place == CAR_POST && car->stage == s) {
+        st->post[car->post].seat[car->seat].left = 0;
+    }
+    StageVacate(l, st, car);
+    MutexUnlock(&st->m);
+}
+
+static void Dispatch(Line *l, int s) {
+    Stage *st = &l->stage[s];
+    MutexLock(&st->m);
+    StageDispatch(l, st);
+    MutexUnlock(&st->m);
+}
+
+static int Queued(Line *l, int s) {
+    MutexLock(&l->stage[s].m);
+    int n = l->stage[s].queued;
+    MutexUnlock(&l->stage[s].m);
+    return n;
+}
+
+static int Waiters(Line *l, int s) {
+    MutexLock(&l->stage[s].m);
+    int n = l->stage[s].waiters;
+    MutexUnlock(&l->stage[s].m);
+    return n;
+}
+
+static void SetRepair(Line *l, int s, int p, int repair) {
+    MutexLock(&l->stage[s].m);
+    l->stage[s].post[p].repair = repair;
+    MutexUnlock(&l->stage[s].m);
+}
+
+static void TestAdmitDirectSeat(void) {
+    LoadLineCfg(NULL);
+    Line *l = OpenLine();
+    Car *car = NewCar(l, P_EXPRESS);
+    Stage *st = &l->stage[S_TUNNEL];
+    MutexLock(&st->m);
+    CHECK(StageAdmit(l, st, car, 0) == ADMIT_SEAT);
+    CHECK(car->res == RES_SEAT && car->resStage == S_TUNNEL && car->resPost == 0);
+    CHECK(st->post[0].reserved == 1);
+    StageCommit(l, st, car, -1);
+    CHECK(car->res == RES_NONE && st->post[0].reserved == 0);
+    CHECK(car->place == CAR_POST && car->stage == S_TUNNEL && car->post == 0 && car->seat == 0);
+    int left = st->post[0].seat[0].left;
+    CHECK(st->post[0].seat[0].car == car->id && left >= 6 && left <= 9);
+    MutexUnlock(&st->m);
+    int enter = FindEv(EV_ENTER, car->id), start = FindEv(EV_OP_START, car->id);
+    CHECK(enter >= 0 && start == enter + 1);
+    CHECK(start >= 0 && evLog[start].arg == left && evLog[start].program == P_EXPRESS);
+    CHECK(car->service == left);
+    CHECK(FindEv(EV_MOVE, car->id) == -1);  // с въезда - без переезда
+    LineFree(l);
+}
+
+static void TestAdmitQueueThenFull(void) {
+    LoadLineCfg(NULL);  // tunnel: 2 поста по одному месту, очередь 2
+    Line *l = OpenLine();
+    Admit want[5] = {ADMIT_SEAT, ADMIT_SEAT, ADMIT_QUEUE, ADMIT_QUEUE, ADMIT_FULL};
+    Car *cars[5];
+    for (int i = 0; i < 5; ++i) {
+        cars[i] = NewCar(l, P_EXPRESS);
+        CHECK(Enter(l, S_TUNNEL, cars[i], 0, 1) == want[i]);
+    }
+    CHECK(cars[0]->post == 0 && cars[1]->post == 1);
+    CHECK(cars[2]->place == CAR_QUEUE && cars[3]->place == CAR_QUEUE);
+    CHECK(cars[4]->place == CAR_ARRIVING && cars[4]->ticket == -1);
+    CHECK(Queued(l, S_TUNNEL) == 2 && Waiters(l, S_TUNNEL) == 0);
+    int q = FindEv(EV_QUEUE, cars[3]->id);
+    CHECK(q >= 0 && evLog[q].arg == 2);
+    LineFree(l);
+}
+
+static void TestCapacityTwo(void) {
+    LoadLineCfg(CAPACITY_CFG);
+    Line *l = OpenLine();
+    Car *a = NewCar(l, P_EXPRESS), *b = NewCar(l, P_EXPRESS), *c = NewCar(l, P_EXPRESS);
+    CHECK(Enter(l, S_DRY, a, 0, 1) == ADMIT_SEAT);
+    CHECK(Enter(l, S_DRY, b, 0, 1) == ADMIT_SEAT);
+    CHECK(Enter(l, S_DRY, c, 0, 1) == ADMIT_QUEUE);
+    CHECK(a->post == 0 && b->post == 0 && a->seat == 0 && b->seat == 1);
+    CHECK(c->place == CAR_QUEUE);
+    LineFree(l);
+}
+
+static void TestReservationCounts(void) {
+    LoadLineCfg(ONE_CFG);
+    Line *l = OpenLine();
+    Car *a = NewCar(l, 0), *b = NewCar(l, 0), *c = NewCar(l, 0);
+    Stage *st = &l->stage[0];
+    MutexLock(&st->m);
+    CHECK(StageAdmit(l, st, a, 0) == ADMIT_SEAT);   // бронь места, без Commit
+    CHECK(StageAdmit(l, st, b, 0) == ADMIT_QUEUE);  // место занято бронью
+    CHECK(st->queueReserved == 1 && st->queued == 0);
+    CHECK(StageAdmit(l, st, c, 0) == ADMIT_FULL);  // бронь очереди учтена во вместимости
+    CHECK(StageAdmit(l, st, a, 0) == ADMIT_SEAT);  // повторный вызов возвращает ту же бронь
+    CHECK(st->post[0].reserved == 1);
+    StageCommit(l, st, a, -1);
+    StageCommit(l, st, b, -1);
+    CHECK(st->queueReserved == 0 && st->queued == 1 && b->place == CAR_QUEUE);
+    CHECK(StageAdmit(l, st, c, 0) == ADMIT_FULL);
+    MutexUnlock(&st->m);
+    LineFree(l);
+
+    // место освободилось, пока машина с бронью очереди ещё в пути: новая машина его не займёт
+    LoadLineCfg(NULL);
+    l = OpenLine();
+    st = &l->stage[S_TUNNEL];
+    Car *t1 = NewCar(l, P_EXPRESS), *t2 = NewCar(l, P_EXPRESS);
+    Car *q = NewCar(l, P_EXPRESS), *n = NewCar(l, P_EXPRESS);
+    Enter(l, S_TUNNEL, t1, 0, 1);
+    Enter(l, S_TUNNEL, t2, 0, 1);
+    CHECK(Enter(l, S_TUNNEL, q, 0, 0) == ADMIT_QUEUE);  // бронь очереди, без Commit
+    Vacate(l, S_TUNNEL, t1);
+    CHECK(Enter(l, S_TUNNEL, n, 0, 0) == ADMIT_QUEUE);  // не SEAT: очередь не пуста
+    MutexLock(&st->m);
+    StageCommit(l, st, q, S_PREWASH);  // въехал в очередь - эстафета сразу сажает его
+    CHECK(q->place == CAR_POST && q->post == 0);
+    StageCommit(l, st, n, S_PREWASH);
+    CHECK(n->place == CAR_QUEUE);
+    MutexUnlock(&st->m);
+    int qq = FindEv(EV_QUEUE, q->id);
+    CHECK(qq >= 0 && FindEv(EV_ENTER, q->id) == qq + 1);
+    LineFree(l);
+}
+
+static void TestPriorityPop(void) {
+    for (int fifo = 0; fifo <= 1; ++fifo) {
+        Config *cfg = LoadLineCfg(PRIORITY_CFG);
+        cfg->rule = fifo ? PRIO_FIFO : PRIO_PROGRAM;
+        Line *l = OpenLine();
+        Car *a = NewCar(l, P_STANDARD), *express = NewCar(l, P_EXPRESS);
+        Car *premium = NewCar(l, P_PREMIUM);
+        CHECK(Enter(l, S_TUNNEL, a, 0, 1) == ADMIT_SEAT);
+        CHECK(Enter(l, S_TUNNEL, express, 0, 1) == ADMIT_QUEUE);
+        CHECK(Enter(l, S_TUNNEL, premium, 0, 1) == ADMIT_QUEUE);
+        Vacate(l, S_TUNNEL, a);
+        Car *won = fifo ? express : premium, *lost = fifo ? premium : express;
+        CHECK(won->place == CAR_POST && won->post == 0 && lost->place == CAR_QUEUE);
+        CHECK(won->th.why.kind == WAIT_OPERATION && won->th.why.stage == S_TUNNEL);
+        CHECK(Queued(l, S_TUNNEL) == 1);
+        int leave = FindEv(EV_LEAVE, a->id), enter = FindEv(EV_ENTER, won->id);
+        CHECK(leave >= 0 && enter > leave && FindEv(EV_OP_START, won->id) == enter + 1);
+        LineFree(l);
+    }
+}
+
+static void SetTicket(Line *l, int s, Car *car, long ticket) {
+    MutexLock(&l->stage[s].m);
+    car->ticket = ticket;
+    MutexUnlock(&l->stage[s].m);
+}
+
+/// Тоннель zero-buffer занят двумя машинами, ждущие места - по порядку номеров в списке.
+static void TestWaitersOrder(void) {
+    // ticket 4 (Standard) раньше ticket 5 (Express)
+    Config *cfg = LoadLineCfg(ZERO_CFG);
+    cfg->rule = PRIO_FIFO;
+    Line *l = OpenLine();
+    Car *t1 = NewCar(l, P_EXPRESS), *t2 = NewCar(l, P_EXPRESS);
+    CHECK(Enter(l, S_TUNNEL, t1, 0, 1) == ADMIT_SEAT && Enter(l, S_TUNNEL, t2, 0, 1) == ADMIT_SEAT);
+    MutexLock(&l->counters);
+    l->nextTicket = 3;
+    MutexUnlock(&l->counters);
+    Car *standard = NewCar(l, P_STANDARD), *express = NewCar(l, P_EXPRESS);
+    CHECK(Enter(l, S_TUNNEL, express, 1, 0) == ADMIT_FULL);
+    CHECK(Enter(l, S_TUNNEL, standard, 1, 0) == ADMIT_FULL);
+    CHECK(express->ticket == 4 && standard->ticket == 5);
+    SetTicket(l, S_TUNNEL, express, 5);  // в списке Express стоит первым, но номер у него больше
+    SetTicket(l, S_TUNNEL, standard, 4);
+    Vacate(l, S_TUNNEL, t1);
+    CHECK(standard->res == RES_SEAT && standard->ticket == -1);
+    CHECK(express->res == RES_NONE && express->ticket == 5 && Waiters(l, S_TUNNEL) == 1);
+    LineFree(l);
+
+    // номер в списке важнее приоритета: Express (раньше) получает место раньше Premium
+    cfg = LoadLineCfg(ZERO_CFG);
+    cfg->rule = PRIO_PROGRAM;
+    l = OpenLine();
+    t1 = NewCar(l, P_EXPRESS);
+    t2 = NewCar(l, P_EXPRESS);
+    Enter(l, S_TUNNEL, t1, 0, 1);
+    Enter(l, S_TUNNEL, t2, 0, 1);
+    express = NewCar(l, P_EXPRESS);
+    Car *premium = NewCar(l, P_PREMIUM);
+    CHECK(Enter(l, S_TUNNEL, express, 1, 0) == ADMIT_FULL);
+    CHECK(Enter(l, S_TUNNEL, premium, 1, 0) == ADMIT_FULL);
+    Vacate(l, S_TUNNEL, t1);
+    CHECK(express->res == RES_SEAT && premium->res == RES_NONE);
+    LineFree(l);
+
+    // равные номера: выше приоритет, затем меньший номер машины
+    cfg = LoadLineCfg(ZERO_CFG);
+    cfg->rule = PRIO_PROGRAM;
+    l = OpenLine();
+    t1 = NewCar(l, P_EXPRESS);
+    t2 = NewCar(l, P_EXPRESS);
+    Enter(l, S_TUNNEL, t1, 0, 1);
+    Enter(l, S_TUNNEL, t2, 0, 1);
+    express = NewCar(l, P_EXPRESS);
+    Car *p1 = NewCar(l, P_PREMIUM), *p2 = NewCar(l, P_PREMIUM);
+    CHECK(Enter(l, S_TUNNEL, p2, 1, 0) == ADMIT_FULL);  // в список в обратном порядке
+    CHECK(Enter(l, S_TUNNEL, p1, 1, 0) == ADMIT_FULL);
+    CHECK(Enter(l, S_TUNNEL, express, 1, 0) == ADMIT_FULL);
+    SetTicket(l, S_TUNNEL, express, 7);
+    SetTicket(l, S_TUNNEL, p1, 7);
+    SetTicket(l, S_TUNNEL, p2, 7);
+    Vacate(l, S_TUNNEL, t1);
+    CHECK(p1->res == RES_SEAT && p2->res == RES_NONE && express->res == RES_NONE);
+    Vacate(l, S_TUNNEL, t2);
+    CHECK(p2->res == RES_SEAT && express->res == RES_NONE && Waiters(l, S_TUNNEL) == 1);
+    LineFree(l);
+}
+
+static void TestBrokenPostTakesNobody(void) {
+    LoadLineCfg(NULL);
+    Line *l = OpenLine();
+    SetRepair(l, S_TUNNEL, 0, 5);
+    Car *a = NewCar(l, P_EXPRESS), *b = NewCar(l, P_EXPRESS);
+    CHECK(Enter(l, S_TUNNEL, a, 0, 0) == ADMIT_SEAT);
+    CHECK(a->resPost == 1);  // не на сломанный пост 0
+    CHECK(Enter(l, S_TUNNEL, b, 0, 0) == ADMIT_QUEUE);
+    Stage *st = &l->stage[S_TUNNEL];
+    MutexLock(&st->m);
+    StageCommit(l, st, a, -1);
+    StageCommit(l, st, b, -1);  // Commit зовёт Dispatch: на сломанный пост не сажает
+    MutexUnlock(&st->m);
+    CHECK(b->place == CAR_QUEUE);
+    Dispatch(l, S_TUNNEL);
+    CHECK(b->place == CAR_QUEUE && FindEv(EV_ENTER, b->id) == -1);
+    SetRepair(l, S_TUNNEL, 0, 0);  // починили - эстафета сажает
+    Dispatch(l, S_TUNNEL);
+    CHECK(b->place == CAR_POST && b->post == 0 && Queued(l, S_TUNNEL) == 0);
+    LineFree(l);
+}
+
+static void TestZeroQueue(void) {
+    LoadLineCfg(ZERO_CFG);
+    Line *l = OpenLine();
+    Car *a = NewCar(l, P_EXPRESS), *b = NewCar(l, P_EXPRESS), *c = NewCar(l, P_EXPRESS);
+    CHECK(Enter(l, S_TUNNEL, a, 0, 1) == ADMIT_SEAT);
+    CHECK(Enter(l, S_TUNNEL, b, 0, 1) == ADMIT_SEAT);
+    CHECK(Enter(l, S_TUNNEL, c, 0, 0) == ADMIT_FULL && Waiters(l, S_TUNNEL) == 0);
+    CHECK(Enter(l, S_TUNNEL, c, 1, 0) == ADMIT_FULL && Waiters(l, S_TUNNEL) == 1);
+    long ticket = c->ticket;
+    CHECK(ticket >= 1);
+    CHECK(Enter(l, S_TUNNEL, c, 1, 0) == ADMIT_FULL);  // повторно в список не встаёт
+    CHECK(Waiters(l, S_TUNNEL) == 1 && c->ticket == ticket);
+    Vacate(l, S_TUNNEL, b);
+    CHECK(FindEv(EV_LEAVE, b->id) >= 0);
+    CHECK(c->res == RES_SEAT && c->resPost == 1 && c->ticket == -1 && Waiters(l, S_TUNNEL) == 0);
+    Stage *st = &l->stage[S_TUNNEL];
+    MutexLock(&st->m);
+    CHECK(StageAdmit(l, st, c, 1) == ADMIT_SEAT);  // машина проснулась и спрашивает снова
+    StageCommit(l, st, c, S_PREWASH);
+    MutexUnlock(&st->m);
+    int move = FindEv(EV_MOVE, c->id);
+    CHECK(move >= 0 && evLog[move].stage == S_TUNNEL && evLog[move].arg == S_PREWASH);
+    CHECK(FindEv(EV_ENTER, c->id) == move + 1 && c->post == 1);
+    LineFree(l);
+
+    // место появилось без эстафеты (пост починился, Dispatch ещё не звали): новая машина не
+    // обгоняет ожидающую
+    LoadLineCfg(ZERO_CFG);
+    l = OpenLine();
+    SetRepair(l, S_TUNNEL, 0, 5);
+    Car *t = NewCar(l, P_EXPRESS), *w = NewCar(l, P_EXPRESS), *n = NewCar(l, P_EXPRESS);
+    CHECK(Enter(l, S_TUNNEL, t, 0, 1) == ADMIT_SEAT && t->post == 1);
+    CHECK(Enter(l, S_TUNNEL, w, 1, 0) == ADMIT_FULL);
+    SetRepair(l, S_TUNNEL, 0, 0);
+    CHECK(Enter(l, S_TUNNEL, n, 0, 0) == ADMIT_FULL);
+    Dispatch(l, S_TUNNEL);
+    CHECK(w->res == RES_SEAT && w->resPost == 0);
+    LineFree(l);
+}
+
+static _Atomic int waiterDone;
+static Admit waiterGot;  // пишет поток машины до waiterDone, читает тест после join
+
+/// Поток машины: ждёт место в тоннеле, держа prewash, как будет в CarMain.
+static void *WaiterMain(void *arg) {
+    Car *car = arg;
+    Stage *st = &line.stage[S_TUNNEL];
+    if (SimBegin(&car->th) == SIM_OK) {
+        MutexLock(&st->m);
+        Admit a = StageAdmit(&line, st, car, 1);
+        MutexUnlock(&st->m);
+        while (a == ADMIT_FULL) {  // SimPark может вернуться зря: условие - в цикле
+            WaitReason why = {.kind = WAIT_ROOM, .stage = S_TUNNEL, .post = -1};
+            if (SimPark(&car->th, why) != SIM_OK) {
+                break;
+            }
+            MutexLock(&st->m);
+            a = StageAdmit(&line, st, car, 1);
+            MutexUnlock(&st->m);
+        }
+        if (a != ADMIT_FULL) {
+            MutexLock(&st->m);
+            StageCommit(&line, st, car, S_PREWASH);
+            MutexUnlock(&st->m);
+        }
+        waiterGot = a;
+    }
+    SimExit(&car->th);
+    atomic_store(&waiterDone, 1);
+    return NULL;
+}
+
+/// Ждёт флага до 2 с. @return 1, если дождался
+static int WaitFlag(_Atomic int *flag) {
+    for (int i = 0; i < 2000 && !atomic_load(flag); ++i) {
+        struct timespec ts = {.tv_sec = 0, .tv_nsec = 1000000L};
+        nanosleep(&ts, NULL);
+    }
+    return atomic_load(flag);
+}
+
+/// Настоящий поток: освобождающий выдаёт бронь и будит припаркованную машину.
+static void TestGrantWakesParkedCar(void) {
+    LoadLineCfg(ZERO_CFG);
+    Line *l = OpenLine();
+    Car *t1 = NewCar(l, P_EXPRESS), *t2 = NewCar(l, P_EXPRESS), *w = NewCar(l, P_STANDARD);
+    Enter(l, S_TUNNEL, t1, 0, 1);
+    Enter(l, S_TUNNEL, t2, 0, 1);
+    atomic_store(&waiterDone, 0);
+    waiterGot = ADMIT_FULL;
+    SimSpawned(&w->th);
+    pthread_t th;
+    CHECK(pthread_create(&th, NULL, WaiterMain, w) == 0);
+    int listed = 0;
+    for (int i = 0; i < 2000 && !(listed = Waiters(l, S_TUNNEL) == 1); ++i) {
+        struct timespec ts = {.tv_sec = 0, .tv_nsec = 1000000L};
+        nanosleep(&ts, NULL);
+    }
+    CHECK(listed);
+    Vacate(l, S_TUNNEL, t1);
+    int woke = WaitFlag(&waiterDone);
+    CHECK(woke);
+    if (!woke) {
+        SimStop();  // без пробуждения поток так и висел бы на семафоре
+    }
+    pthread_join(th, NULL);
+    CHECK(waiterGot == ADMIT_SEAT);
+    CHECK(w->place == CAR_POST && w->stage == S_TUNNEL && w->post == 0);
+    LineFree(l);
+}
+
+static void TestSabotageOverflow(void) {
+    Config *cfg = LoadLineCfg(ONE_CFG);
+    cfg->sabotage = SAB_OVERFLOW;
+    Line *l = OpenLine();
+    Car *a = NewCar(l, 0), *b = NewCar(l, 0), *c = NewCar(l, 0), *d = NewCar(l, 0);
+    CHECK(Enter(l, 0, a, 0, 1) == ADMIT_SEAT);
+    CHECK(Enter(l, 0, b, 0, 1) == ADMIT_QUEUE);
+    long before = SoftAssertFailures();
+    CHECK(Enter(l, 0, c, 0, 1) == ADMIT_QUEUE);  // ошибка на единицу пускает лишнюю
+    CHECK(SoftAssertFailures() > before);        // а Commit это замечает
+    CHECK(Queued(l, 0) == 2);
+    CHECK(Enter(l, 0, d, 0, 1) == ADMIT_FULL);
+    LineFree(l);
+}
+
+/// Ожидающий стоит на посту prewash; место в тоннеле ему выдают под мьютексом тоннеля.
+static void RunDeadlockScenario(Sabotage sab, long *violations) {
+    Config *cfg = LoadLineCfg(ZERO_CFG);
+    cfg->sabotage = sab;
+    Line *l = OpenLine();
+    Car *p = NewCar(l, P_STANDARD), *t1 = NewCar(l, P_EXPRESS), *t2 = NewCar(l, P_EXPRESS);
+    CHECK(Enter(l, S_PREWASH, p, 0, 1) == ADMIT_SEAT);
+    Enter(l, S_TUNNEL, t1, 0, 1);
+    Enter(l, S_TUNNEL, t2, 0, 1);
+    CHECK(Enter(l, S_TUNNEL, p, 1, 0) == ADMIT_FULL);
+    long before = LockdepViolations();
+    Vacate(l, S_TUNNEL, t1);
+    CHECK(p->res == RES_SEAT);
+    *violations = LockdepViolations() - before;
+    CHECK(LockdepHeldCount() == 0);
+    LineFree(l);
+}
+
+static void TestSabotageDeadlock(void) {
+    LockdepSetFatal(0);
+    long clean = -1, caught = -1;
+    RunDeadlockScenario(SAB_NONE, &clean);
+    RunDeadlockScenario(SAB_DEADLOCK, &caught);
+    CHECK(clean == 0);
+    CHECK(caught == 1);
+    LockdepSetFatal(1);
+}
+
+/// Запросы момента покоя на dead-stage: машина в очереди wax, у которой нет постов.
+static void TestStallQueries(void) {
+    LoadLineCfg(DEAD_CFG);
+    Line *l = OpenLine();
+    Car *stuck = NewCar(l, P_PREMIUM);
+    CHECK(Enter(l, S_WAX, stuck, 0, 1) == ADMIT_QUEUE);
+    CHECK(LineProgressPossible(l) == 0);
+    CHECK(LineStallCause(l) == S_WAX);
+    CHECK(LineEntranceMayAccept(l) == 1);
+    Car *busy = NewCar(l, P_EXPRESS);
+    CHECK(Enter(l, S_TUNNEL, busy, 0, 1) == ADMIT_SEAT);
+    CHECK(LineProgressPossible(l) == 1);  // моется
+    MutexLock(&l->stage[S_TUNNEL].m);
+    l->stage[S_TUNNEL].post[busy->post].seat[busy->seat].left = 0;  // помыта, ей нужна сушка
+    MutexUnlock(&l->stage[S_TUNNEL].m);
+    CHECK(LineProgressPossible(l) == 0);
+    SetRepair(l, S_DRY, 1, 3);
+    CHECK(LineProgressPossible(l) == 1);  // чинят пост, который ей нужен
+    SetRepair(l, S_PREWASH, 0, 3);
+    SetRepair(l, S_DRY, 1, 0);
+    CHECK(LineProgressPossible(l) == 0);  // ремонт пустого поста, которого никто не ждёт
+    LineFree(l);
+
+    LoadLineCfg(ZERO_CFG);  // въезды обеих первых стадий заняты
+    l = OpenLine();
+    CHECK(Enter(l, S_PREWASH, NewCar(l, P_STANDARD), 0, 1) == ADMIT_SEAT);
+    CHECK(Enter(l, S_TUNNEL, NewCar(l, P_EXPRESS), 0, 1) == ADMIT_SEAT);
+    CHECK(LineEntranceMayAccept(l) == 1);
+    CHECK(Enter(l, S_TUNNEL, NewCar(l, P_EXPRESS), 0, 1) == ADMIT_SEAT);
+    CHECK(LineEntranceMayAccept(l) == 0);
+    CHECK(LineStallCause(l) == -1);
+    LineFree(l);
+}
+
 int main(void) {
     RUN(TestStageCapacity);
     RUN(TestBadCapacity);
@@ -800,5 +1348,17 @@ int main(void) {
     RUN(TestDescribeTexts);
     RUN(TestSourceNames);
     RUN(TestViewLogFormat);
+    RUN(TestAdmitDirectSeat);
+    RUN(TestAdmitQueueThenFull);
+    RUN(TestCapacityTwo);
+    RUN(TestReservationCounts);
+    RUN(TestPriorityPop);
+    RUN(TestWaitersOrder);
+    RUN(TestBrokenPostTakesNobody);
+    RUN(TestZeroQueue);
+    RUN(TestSabotageOverflow);
+    RUN(TestSabotageDeadlock);
+    RUN(TestGrantWakesParkedCar);
+    RUN(TestStallQueries);
     return UnitSummary();
 }
