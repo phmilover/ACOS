@@ -167,6 +167,7 @@ void SimThreadDestroy(SimThread *t) {
 void SimSpawned(SimThread *t) {
     MutexLock(&mu);
     t->wakePending = 0;
+    t->reasonPending = 0;
     if (atomic_load(&stopping)) {
         t->state = ST_READY;  // SimBegin увидит остановку и сразу вернётся
     } else {
@@ -233,7 +234,12 @@ SimStatus SimPark(SimThread *self, WaitReason why) {
         return SIM_OK;
     }
     self->state = ST_PARKED;
-    self->why = why;
+    if (self->reasonPending) {  // причину уже задал другой поток, пока мы работали
+        self->reasonPending = 0;
+        self->why = self->pendingWhy;
+    } else {
+        self->why = why;
+    }
     ++self->parks;
     ++totalParks;
     --running;
@@ -243,7 +249,12 @@ SimStatus SimPark(SimThread *self, WaitReason why) {
 
 void SimSetReason(SimThread *t, WaitReason why) {
     MutexLock(&mu);
-    t->why = why;
+    if (t->state == ST_RUNNING || t->state == ST_READY) {
+        t->pendingWhy = why;
+        t->reasonPending = 1;
+    } else {
+        t->why = why;
+    }
     MutexUnlock(&mu);
 }
 

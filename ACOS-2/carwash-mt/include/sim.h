@@ -55,10 +55,12 @@ typedef struct SimThread {
     int order;  ///< порядок пробуждения в одну минуту в -D (меньше - раньше)
     Sem wake;   ///< на нём поток ждёт, пока его запустят
     SimState state;
-    int wakeAt;       ///< минута пробуждения спящего
-    WaitReason why;   ///< причина ожидания
-    int wakePending;  ///< разбудили, пока работал: ближайший SimPark проходит сразу
-    long parks;       ///< сколько раз вызывал SimPark
+    int wakeAt;             ///< минута пробуждения спящего
+    WaitReason why;         ///< причина ожидания
+    int wakePending;        ///< разбудили, пока работал: ближайший SimPark проходит сразу
+    int reasonPending;      ///< причину задали, пока работал: ближайший SimPark берёт её
+    WaitReason pendingWhy;  ///< эта причина
+    long parks;             ///< сколько раз вызывал SimPark
     struct SimThread *nextAll, *nextReady;
 } SimThread;
 
@@ -106,10 +108,12 @@ void SimExit(SimThread *self);
 /// Спит @p minutes ≥ 1 модельных минут (SimWake сон не прерывает).
 SimStatus SimSleep(SimThread *self, int minutes);
 
-/// Паркуется до SimWake. @param why причина ожидания
+/// Паркуется до SimWake. @param why причина ожидания; если до парковки другой поток уже
+/// задал причину через SimSetReason, остаётся она, а @p why не используется
 SimStatus SimPark(SimThread *self, WaitReason why);
 
-/// Меняет причину ожидания припаркованному потоку.
+/// Меняет причину ожидания: припаркованному - сразу; работающему или готовому - запоминает
+/// для его ближайшего SimPark (иначе устаревший аргумент SimPark затёр бы её).
 void SimSetReason(SimThread *t, WaitReason why);
 
 /// Будит поток: припаркованный - в очередь запуска; работающему запоминает пробуждение для

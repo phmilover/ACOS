@@ -544,6 +544,76 @@ static void TestWakeBeforePark(void) {
     CHECK(h.calls == 1);
 }
 
+typedef struct {
+    SimThread a, b;
+    _Atomic int reasonSet;  // B уже вызвал SimSetReason(A)
+    WaitReason seen;        // причина A, которую увидел крючок в минуту 0
+    int seenState;
+} ReasonCtx;
+
+static void *ReasonParker(void *arg) {
+    ReasonCtx *c = arg;
+    if (SimBegin(&c->a) == SIM_OK) {
+        while (!atomic_load(&c->reasonSet)) {
+            // A ещё работает, когда другой поток задаёт ему причину
+        }
+        SimPark(&c->a, (WaitReason){.kind = WAIT_QUEUE, .stage = 0, .post = -1});
+    }
+    SimExit(&c->a);
+    return NULL;
+}
+
+static void *ReasonSetter(void *arg) {
+    ReasonCtx *c = arg;
+    if (SimBegin(&c->b) == SIM_OK) {
+        SimSetReason(&c->a, (WaitReason){.kind = WAIT_OPERATION, .stage = 3, .post = 1});
+        atomic_store(&c->reasonSet, 1);
+        if (SimSleep(&c->b, 1) == SIM_OK) {
+            SimWake(&c->a);
+        }
+    }
+    SimExit(&c->b);
+    return NULL;
+}
+
+static void LookAtA(const SimThread *t, void *ctx) {
+    ReasonCtx *c = ctx;
+    if (t == &c->a) {
+        c->seen = t->why;
+        c->seenState = (int)t->state;
+    }
+}
+
+static int ReasonHook(int now, int nextWake, void *ctx) {
+    if (now == 0) {
+        SimForEach(LookAtA, ctx);
+    }
+    return nextWake != -1;
+}
+
+/// SimSetReason работающему потоку не затирается аргументом его следующего SimPark.
+static void TestReasonBeforePark(void) {
+    ReasonCtx c = {.seenState = -1};
+    SimOptions o = {.deterministic = 0, .delayMs = 0, .hook = ReasonHook, .ctx = &c};
+    long sems = FreshSim(&o, 0);
+    pthread_t ta, tb, clock;
+    CHECK(SimThreadInit(&c.a, TH_CAR, 1, "car A", 0) == 0);
+    CHECK(SimThreadInit(&c.b, TH_POST, 2, "post B", 0) == 0);
+    SimSpawned(&c.a);
+    SimSpawned(&c.b);
+    CHECK(pthread_create(&ta, NULL, ReasonParker, &c) == 0);
+    CHECK(pthread_create(&tb, NULL, ReasonSetter, &c) == 0);
+    CHECK(pthread_create(&clock, NULL, SimClockMain, NULL) == 0);
+    pthread_join(clock, NULL);
+    pthread_join(ta, NULL);
+    pthread_join(tb, NULL);
+    SimThreadDestroy(&c.a);
+    SimThreadDestroy(&c.b);
+    CHECK(SemOpenCount() == sems);
+    CHECK(c.seenState == ST_PARKED);
+    CHECK(c.seen.kind == WAIT_OPERATION && c.seen.stage == 3 && c.seen.post == 1);
+}
+
 int main(void) {
     RUN(TestStageCapacity);
     RUN(TestBadCapacity);
@@ -560,6 +630,7 @@ int main(void) {
     RUN(TestHookSeesQuiescence);
     RUN(TestStopWakesParked);
     RUN(TestWakeBeforePark);
+    RUN(TestReasonBeforePark);
     RUN(TestDeterministicOrder);
     RUN(TestNoLocksWhenParking);
     return UnitSummary();
