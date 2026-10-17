@@ -427,6 +427,169 @@ static void TestOperationLength(void) {
     Report(bad == 0 && ops > 0 && wrong == 0, "oplen", what);
 }
 
+static void SleepMs(long ms) {
+    struct timespec ts = {.tv_sec = ms / 1000, .tv_nsec = (ms % 1000) * 1000000L};
+    nanosleep(&ts, NULL);
+}
+
+// Номер (с 1) первой строки вывода, где встречается text, или 0
+static long LineOf(const char *name, const char *text) {
+    char path[256];
+    TmpPath(path, sizeof(path), name, "out");
+    char *all = ReadFile(path);
+    long n = 0, found = 0;
+    char *save = NULL;
+    for (char *line = all ? strtok_r(all, "\n", &save) : NULL; line && !found;
+         line = strtok_r(NULL, "\n", &save)) {
+        ++n;
+        if (strstr(line, text)) {
+            found = n;
+        }
+    }
+    free(all);
+    return found;
+}
+
+static void TestStall(void) {
+    puts("== 11. Stall: the wait-for graph names the root cause");
+    Run("dead", 2, (const char *[]){"-c", "data/dead-stage.cfg", "-s", "3", NULL});
+    Expect("dead", "WARNING: program Premium needs stage wax", "warning at start");
+    Expect("dead", "STALL: .* stage wax has no posts", "stall names the stage");
+    Expect("dead", "WAITS-FOR GRAPH", "wait-for graph is printed");
+    Expect("dead", "ROOT CAUSE: stage wax has no posts", "graph names the root cause");
+    Expect("dead", "Outcome +: STALLED", "outcome is reported");
+    NotExpect("dead", "soft assert", "no soft asserts");
+
+    Run("dead-D", 2, (const char *[]){"-c", "data/dead-stage.cfg", "-s", "3", "-D", NULL});
+    Expect("dead-D", "ROOT CAUSE: stage wax has no posts", "-D: graph names the root cause");
+
+    // одна невыполнимая программа не должна останавливать мойку для остальных
+    Run("deadprog", 2, (const char *[]){"-c", "data/dead-program.cfg", "-s", "2", NULL});
+    long closed = LineOf("deadprog", "ENTRANCE CLOSED");
+    long stall = LineOf("deadprog", "STALL:");
+    Report(closed > 0 && stall > closed, "deadprog", "stall comes only after the entrance closes");
+
+    // в ИЗ1 из-за поломок пустых постов тупик находился только на 29-е сутки. При частых
+    // поломках машины Premium часто получают отказ все, и день кончается нормально (так при
+    // -s 2): берём seed, где Premium попадает на линию, и -D, чтобы исход не зависел от ОС
+    char cfg[256];
+    TmpPath(cfg, sizeof(cfg), "deadfail", "cfg");
+    WriteWithFailure("data/dead-stage.cfg", cfg, "failure = 0.2 5 40");
+    Run("deadfail", 2, (const char *[]){"-c", cfg, "-s", "3", "-D", NULL});
+    Expect("deadfail", "STALL: .* stage wax has no posts", "the stall is reported");
+    NotExpect("deadfail", "^\\[d[0-9]+ ", "stall is found on the first day despite failures");
+}
+
+static void TestStallDot(void) {
+    puts("== 12. Stall: the wait-for graph in DOT (-g)");
+    char dot[256];
+    TmpPath(dot, sizeof(dot), "g", "dot");
+    Run("deaddot", 2, (const char *[]){"-c", "data/dead-stage.cfg", "-s", "3", "-g", dot, NULL});
+    char *text = ReadFile(dot);
+    Report(text && strncmp(text, "digraph", 7) == 0, "deaddot", "the file starts with digraph");
+    Report(text && strstr(text, "wax"), "deaddot", "the graph mentions stage wax");
+    free(text);
+}
+
+static void TestSignals(void) {
+    puts("== 13. Unlimited mode is stopped by signals");
+    const int signals[] = {SIGINT, SIGTERM};
+    const char *names[] = {"SIGINT", "SIGTERM"};
+    for (int i = 0; i < 2; ++i) {
+        pid_t pid = Start(names[i], (const char *[]){"-u", "-d", "5", "-s", "5", NULL});
+        SleepMs(300);
+        kill(pid, signals[i]);
+        CheckCode(names[i], Wait(pid), 3);
+        Expect(names[i], "INTERRUPTED by user", "interruption is reported");
+
+        char log[256];
+        TmpPath(log, sizeof(log), names[i], "log");
+        char *journal = ReadFile(log);
+        Report(journal && strstr(journal, "INTERRUPTED") && strstr(journal, "RESULTS"), names[i],
+               "journal has the interruption and results");
+        free(journal);
+    }
+}
+
+static void TestSnapshotSignal(void) {
+    puts("== 14. SIGUSR1 prints a snapshot and the run goes on");
+    pid_t pid = Start("usr1", (const char *[]){"-u", "-d", "5", "-s", "5", NULL});
+    SleepMs(300);
+    kill(pid, SIGUSR1);
+    SleepMs(300);
+    kill(pid, SIGINT);
+    CheckCode("usr1", Wait(pid), 3);
+    Expect("usr1", "WAITS-FOR GRAPH", "wait-for graph is printed");
+    Expect("usr1", "^THREADS", "thread table is printed");
+    Expect("usr1", "coordinator", "the table lists the coordinator");
+}
+
+static void TestCloseSignal(void) {
+    puts("== 15. SIGUSR2 closes the entrance early");
+    pid_t pid = Start("usr2", (const char *[]){"-u", "-d", "5", "-s", "5", NULL});
+    SleepMs(300);
+    kill(pid, SIGUSR2);
+    CheckCode("usr2", Wait(pid), 0);
+    Expect("usr2", "ENTRANCE CLOSED", "entrance closes");
+    Expect("usr2", "Outcome +: finished", "accepted cars are washed");
+    Expect("usr2", "still inside: 0", "nobody is left inside");
+}
+
+// Сумма мест линии (посты x ёмкость + очереди) по строкам ConfigPrint из вывода, или -1
+static int LinePlaces(const char *name) {
+    char path[256];
+    TmpPath(path, sizeof(path), name, "out");
+    char *all = ReadFile(path);
+    int places = 0, stages = 0;
+    char *save = NULL;
+    for (char *line = all ? strtok_r(all, "\n", &save) : NULL; line;
+         line = strtok_r(NULL, "\n", &save)) {
+        char stage[16];
+        int posts = 0, cap = 1, queue = 0;
+        // строки печатает сама программа: "  tunnel    posts 2 x2, operation 6-9 min, queue 2"
+        // NOLINTNEXTLINE(bugprone-unchecked-string-to-number-conversion,cert-err34-c)
+        if (sscanf(line, "  %15s posts %d", stage, &posts) != 2) {
+            continue;
+        }
+        const char *x = strstr(line, " x");
+        const char *q = strstr(line, "queue ");
+        if (x && x < strstr(line, ",")) {
+            cap = (int)strtol(x + 2, NULL, 10);
+        }
+        if (q) {
+            queue = (int)strtol(q + 6, NULL, 10);
+        }
+        places += (posts * cap) + queue;
+        ++stages;
+    }
+    free(all);
+    return stages > 0 ? places : -1;
+}
+
+static void TestUnlimitedReaping(void) {
+    puts("== 16. Unlimited mode: car threads are reaped as they leave");
+    pid_t pid = Start("reap", (const char *[]){"-u", "-d", "0", "-s", "3", NULL});
+    SleepMs(2000);
+    kill(pid, SIGINT);
+    CheckCode("reap", Wait(pid), 3);
+    char path[256];
+    TmpPath(path, sizeof(path), "reap", "out");
+    char *all = ReadFile(path);
+    const char *at = all ? strstr(all, "\nThreads ") : NULL;
+    int created = -1, cars = -1, peak = -1;
+    long parks = -1;
+    // NOLINTNEXTLINE(bugprone-unchecked-string-to-number-conversion,cert-err34-c)
+    int got = at ? sscanf(at, "\nThreads : created %d (cars %d), peak alive cars %d, parks %ld",
+                          &created, &cars, &peak, &parks)
+                 : 0;
+    free(all);
+    int places = LinePlaces("reap");
+    char what[160];
+    snprintf(what, sizeof(what), "created %d threads (%d cars), peak alive cars %d <= %d + 1",
+             created, cars, peak, places);
+    Report(got == 4 && places > 0 && created > 100 && peak <= places + 1 && peak > 0, "reap", what);
+}
+
 int main(int argc, char **argv) {
     if (argc > 1) {
         bin = argv[1];
@@ -453,6 +616,12 @@ int main(int argc, char **argv) {
     TestJournalUnwritable();
     TestSemFailure();
     TestOperationLength();
+    TestStall();
+    TestStallDot();
+    TestSignals();
+    TestSnapshotSignal();
+    TestCloseSignal();
+    TestUnlimitedReaping();
 
     RemoveTmpDir();
     printf("\nPassed: %d, failed: %d\n", passed, failed);

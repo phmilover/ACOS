@@ -14,13 +14,25 @@
 #include "events.h"
 #include "line.h"
 
-/// Закрывает въезд: EV_CLOSE с числом принятых машин внутри.
+/// Закрывает въезд: EV_CLOSE с числом принятых машин внутри. Если въезд уже закрыл крючок
+/// часов по SIGUSR2, второго EV_CLOSE нет.
 static void Close(Line *l) {
     MutexLock(&l->counters);
+    int wasOpen = l->open;
     l->open = 0;
     int inside = l->inside;
     MutexUnlock(&l->counters);
-    EV(EV_CLOSE, -1, -1, -1, -1, inside);
+    if (wasOpen) {
+        EV(EV_CLOSE, -1, -1, -1, -1, inside);
+    }
+}
+
+/// @return 1, если въезд ещё открыт (его может досрочно закрыть SIGUSR2)
+static int EntranceOpen(Line *l) {
+    MutexLock(&l->counters);
+    int open = l->open;
+    MutexUnlock(&l->counters);
+    return open;
 }
 
 /// Ждёт, пока все cfg->cars машин решат вопрос с въездом (принята или отказ): так EV_CLOSE
@@ -100,10 +112,16 @@ void *CoordinatorMain(void *arg) {
         int reaped = 0;
         for (;;) {
             int now = SimNow();
+            if (!EntranceOpen(l)) {
+                break;  // въезд закрыли сигналом: новых машин не будет
+            }
             if (cfg->day > 0 && now >= cfg->day) {
                 Close(l);
                 break;
             }
+            // сначала собрать уехавших, потом впускать новую: тогда живых потоков машин не
+            // больше, чем мест на линии, плюс одна новая (все решения прошлых минут уже приняты)
+            reaped = Reap(l, reaped);
             if (now >= nextArrival) {
                 if (SpawnCar(l, now) != 0) {
                     atomic_fetch_or(&l->requests, REQ_NO_RESOURCES);
@@ -120,7 +138,6 @@ void *CoordinatorMain(void *arg) {
                     break;
                 }
             }
-            reaped = Reap(l, reaped);
             int wake = nextArrival;
             if (cfg->day > 0 && cfg->day < wake) {
                 wake = cfg->day;

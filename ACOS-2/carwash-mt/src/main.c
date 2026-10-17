@@ -2,8 +2,9 @@
  * @file main.c
  * @brief Автомойка, вариант 43, многопоточная: поток на машину, пост и координатора.
  *
- * Главный поток разбирает ключи и конфиг, запускает посты, координатора и часы, ждёт их
- * завершения (join), собирает оставшиеся потоки машин и печатает итоги.
+ * Главный поток разбирает ключи и конфиг, блокирует сигналы (их забирает поток sigwait,
+ * signals.h), запускает посты, координатора и часы, ждёт их завершения (join), собирает
+ * оставшиеся потоки машин и печатает итоги.
  *
  * Коды выхода: 0 - всё вымыто, 1 - плохие параметры, 2 - тупик, 3 - прервали сигналом,
  * 4 - нарушение инварианта, 5 - не хватило ресурсов (память, поток, семафор).
@@ -22,6 +23,7 @@
 #include "line.h"
 #include "post.h"
 #include "quiesce.h"
+#include "signals.h"
 #include "sim.h"
 #include "soft_assert.h"
 #include "view_log.h"
@@ -44,6 +46,8 @@ static void Usage(const char *prog) {
             "  -t        show the thread that reported each event\n"
             "  -g FILE   write the wait-for graph in DOT on a stall\n"
             "  -h        this help\n"
+            "Signals: SIGINT/SIGTERM interrupt (results and journal are saved), SIGUSR1 prints\n"
+            "         the wait-for graph and threads to stderr, SIGUSR2 closes the entrance early\n"
             "Exit codes: 0 done, 1 bad parameters, 2 stall, 3 interrupted, 4 invariant violated,\n"
             "            5 out of resources (memory, thread or semaphore)\n",
             prog);
@@ -142,6 +146,15 @@ static const char *Outcome(LineStatus status) {
     }
 }
 
+/// Потоки, которые программа создаёт помимо машин: посты, координатор, часы, сигналы.
+static int ServiceThreads(const Config *cfg) {
+    int n = 3;
+    for (int s = 0; s < cfg->stages; ++s) {
+        n += cfg->stage[s].posts;
+    }
+    return n;
+}
+
 /// Итоги прогона (в этой задаче - исход и счётчики; полная статистика - stats.c).
 static void PrintResults(int fd, Line *l, int now) {
     char from[16], to[16];
@@ -161,7 +174,8 @@ static void PrintResults(int fd, Line *l, int now) {
             rejected);
     dprintf(fd, "Cars washed    : %d, still inside: %d\n", served, inside);
     dprintf(fd, "Failures       : %d\n", failures);
-    dprintf(fd, "Car threads    : %d, at most %d at once\n", arrived, peak);
+    dprintf(fd, "Threads        : created %d (cars %d), peak alive cars %d, parks %ld\n",
+            arrived + ServiceThreads(l->cfg), arrived, peak, SimTotalParks());
 }
 
 static int ExitCode(const Line *l) {
@@ -249,6 +263,8 @@ int main(int argc, char **argv) {
     if (rc != 0) {
         return rc < 0 ? 0 : 1;
     }
+    // до любого другого потока: маску наследуют все, сигналы достанутся только потоку sigwait
+    SignalsBlock();
 
     static Config cfg;
     char err[256];
@@ -283,6 +299,15 @@ int main(int argc, char **argv) {
     }
     if (LineInit(&line, &cfg) != 0) {
         NoResources();
+        SimShutdown();
+        return 5;
+    }
+    // после LineInit: он обнуляет line.requests, куда пишет поток сигналов. Сигнал, пришедший
+    // раньше, не теряется - он заблокирован и ждёт sigwait
+    if (SignalsStart(&line) != 0) {
+        NoResources();
+        LineFree(&line);
+        SimShutdown();
         return 5;
     }
 
@@ -305,6 +330,7 @@ int main(int argc, char **argv) {
     if (RunModel(&line) != 0) {
         line.status = LINE_NO_RESOURCES;
     }
+    SignalsStop();  // модель кончилась: дальнейшие сигналы ничего не меняют
     if (line.status == LINE_NO_RESOURCES) {
         NoResources();
     }
@@ -323,5 +349,6 @@ int main(int argc, char **argv) {
 
     int code = ExitCode(&line);
     LineFree(&line);
+    SimShutdown();
     return code;
 }

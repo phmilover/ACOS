@@ -1,4 +1,5 @@
 #include <errno.h>
+#include <fcntl.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdlib.h>
@@ -18,6 +19,7 @@
 #include "stage.h"
 #include "unit.h"
 #include "view_log.h"
+#include "waitgraph.h"
 
 static void TestStageCapacity(void) {
     Config c;
@@ -641,6 +643,85 @@ static void TestStaleReasonDropped(void) {
     CHECK(c.firstPark == SIM_OK);
     CHECK(c.seenState == ST_PARKED);
     CHECK(c.seen.kind == WAIT_QUEUE && c.seen.stage == 7);
+}
+
+/// Крючок для SimKick: считает вызовы, о каждом сообщает через idle, на stopAt-м останавливает.
+typedef struct {
+    int calls, stopAt;
+    int now[4];
+    Sem idle;
+} KickLog;
+
+static int KickHook(int now, int nextWake, void *ctx) {
+    (void)nextWake;
+    KickLog *k = ctx;
+    if (k->calls < 4) {
+        k->now[k->calls] = now;
+    }
+    int go = ++k->calls < k->stopAt;
+    SemPost(&k->idle);
+    return go;
+}
+
+static long MsSince(const struct timespec *t0) {
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return ((t.tv_sec - t0->tv_sec) * 1000L) + ((t.tv_nsec - t0->tv_nsec) / 1000000L);
+}
+
+/// Часы ждут без спящих (nextWake == -1): SimKick заставляет их снова вызвать крючок.
+static void TestKickRerunsHook(void) {
+    KickLog k = {.stopAt = 3};
+    CHECK(SemOpen(&k.idle, 0) == 0);
+    SimOptions o = {.delayMs = 0, .hook = KickHook, .ctx = &k};
+    FreshSim(&o, 1);
+    pthread_t clock;
+    CHECK(pthread_create(&clock, NULL, SimClockMain, NULL) == 0);
+    SemWait(&k.idle);  // первый покой: потоков нет, крючок вернул 1, часы ждут
+    SimKick();
+    SemWait(&k.idle);
+    SimKick();  // третий вызов останавливает модель
+    pthread_join(clock, NULL);
+    CHECK(k.calls == 3);
+    CHECK(k.now[0] == 0 && k.now[1] == 0 && k.now[2] == 0);
+    SemClose(&k.idle);
+}
+
+/// SimKick во время задержки темпа: крючок вызывается сразу, в ту же минуту, а не через -d.
+static void TestKickCutsDelay(void) {
+    KickLog k = {.stopAt = 2};
+    CHECK(SemOpen(&k.idle, 0) == 0);
+    SimOptions o = {.delayMs = 5000, .hook = KickHook, .ctx = &k};
+    FreshSim(&o, 1);
+    Worker w = {.th = {.id = 0}, .step = 1, .count = 8};
+    pthread_t tid, clock;
+    CHECK(SimThreadInit(&w.th, TH_POST, 0, "post", 0) == 0);
+    SimSpawned(&w.th);
+    CHECK(pthread_create(&tid, NULL, WorkerMain, &w) == 0);
+    CHECK(pthread_create(&clock, NULL, SimClockMain, NULL) == 0);
+    SemWait(&k.idle);  // крючок вернул 1, часы в задержке на 5 с
+    struct timespec t0;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    SimKick();
+    pthread_join(clock, NULL);
+    CHECK(MsSince(&t0) < 1000);
+    CHECK(k.calls == 2 && k.now[1] == k.now[0]);
+    pthread_join(tid, NULL);
+    CHECK(w.last == SIM_STOP);
+    SimThreadDestroy(&w.th);
+    SemClose(&k.idle);
+}
+
+/// SimShutdown закрывает семафор часов; повторный вызов ничего не делает.
+static void TestShutdownClosesClock(void) {
+    SimOptions o = {0};
+    long open = FreshSim(&o, 0);
+    SimShutdown();
+    CHECK(SemOpenCount() == open - 1);
+    SimShutdown();
+    CHECK(SemOpenCount() == open - 1);
+    SimKick();  // после SimShutdown безопасен
+    FreshSim(&o, 0);
 }
 
 /// Конфигурация normal (встроенная): prewash, tunnel, wax, dry.
@@ -1324,6 +1405,118 @@ static void TestStallQueries(void) {
     LineFree(l);
 }
 
+/// Что функция вывода пишет в дескриптор: через pipe (вывод маленький, буфера хватает).
+static char graphOut[8192];
+
+static const char *Capture(void (*print)(int fd, Line *l, int color), Line *l) {
+    int fds[2];
+    CHECK(pipe(fds) == 0);
+    print(fds[1], l, 0);
+    close(fds[1]);
+    ssize_t n = read(fds[0], graphOut, sizeof graphOut - 1);
+    graphOut[n > 0 ? n : 0] = '\0';
+    close(fds[0]);
+    return graphOut;
+}
+
+static void PrintThreads(int fd, Line *l, int color) {
+    (void)color;
+    WaitGraphThreads(fd, l->cfg);
+}
+
+/// Помытая машина на посту стадии s просит место на стадии next и встаёт в список ожидающих.
+static void Block(Line *l, int s, Car *car, int next) {
+    MutexLock(&l->stage[s].m);
+    l->stage[s].post[car->post].seat[car->seat].left = 0;
+    MutexUnlock(&l->stage[s].m);
+    CHECK(Enter(l, next, car, 1, 0) == ADMIT_FULL);
+}
+
+/// Пример: wax без постов, перед ним всё забито.
+static Line *StuckLine(void) {
+    LoadLineCfg(DEAD_CFG);
+    Line *l = OpenLine();
+    CHECK(Enter(l, S_WAX, NewCar(l, P_PREMIUM), 0, 1) == ADMIT_QUEUE);  // #1
+    CHECK(Enter(l, S_WAX, NewCar(l, P_PREMIUM), 0, 1) == ADMIT_QUEUE);  // #2
+    Car *c3 = NewCar(l, P_PREMIUM), *c4 = NewCar(l, P_PREMIUM);
+    CHECK(Enter(l, S_TUNNEL, c3, 0, 1) == ADMIT_SEAT);
+    CHECK(Enter(l, S_TUNNEL, c4, 0, 1) == ADMIT_SEAT);
+    Block(l, S_TUNNEL, c3, S_WAX);
+    Block(l, S_TUNNEL, c4, S_WAX);
+    Car *c5 = NewCar(l, P_STANDARD);
+    CHECK(Enter(l, S_PREWASH, c5, 0, 1) == ADMIT_SEAT);
+    CHECK(Enter(l, S_TUNNEL, NewCar(l, P_EXPRESS), 0, 1) == ADMIT_QUEUE);  // #6
+    CHECK(Enter(l, S_TUNNEL, NewCar(l, P_EXPRESS), 0, 1) == ADMIT_QUEUE);  // #7
+    Block(l, S_PREWASH, c5, S_TUNNEL);
+    return l;
+}
+
+static void TestWaitGraphText(void) {
+    Line *l = StuckLine();
+    const char *g = Capture(WaitGraphPrint, l);
+    CHECK(strstr(g, "WAITS-FOR GRAPH at 08:00 (7 car(s) stuck)\n") == g);
+    CHECK(strstr(g, "  car #1   in wax queue       -> waits for a post in wax\n"));
+    CHECK(strstr(g, "  car #3   on tunnel post 1   -> waits for room in wax\n"));
+    CHECK(strstr(g, "  car #4   on tunnel post 2   -> waits for room in wax\n"));
+    CHECK(strstr(g, "    wax: 0 posts                <- ROOT CAUSE: stage wax has no posts\n"));
+    CHECK(strstr(g, "  car #5   on prewash post 1  -> waits for room in tunnel\n"));
+    CHECK(strstr(g, "  car #6   in tunnel queue    -> waits for a post in tunnel\n"));
+    CHECK(strstr(g, "    tunnel: 2/2 posts held by car #3, car #4 (both blocked), queue 2/2\n"));
+    const char *wax = strstr(g, "wax: 0 posts"), *c5 = strstr(g, "car #5 ");
+    CHECK(wax && c5 && wax < c5);  // сначала то, что ближе к корню (дальше по линии)
+    int roots = 0;
+    for (const char *p = strstr(g, "ROOT CAUSE"); p; p = strstr(p + 1, "ROOT CAUSE")) {
+        ++roots;
+    }
+    CHECK(roots == 1);  // корень назван один раз
+    LineFree(l);
+}
+
+static void TestWaitGraphBroken(void) {
+    LoadLineCfg(DEAD_CFG);
+    Line *l = OpenLine();
+    SetRepair(l, S_DRY, 0, 6);
+    SetRepair(l, S_DRY, 1, 4);
+    CHECK(Enter(l, S_DRY, NewCar(l, P_EXPRESS), 0, 1) == ADMIT_QUEUE);
+    const char *g = Capture(WaitGraphPrint, l);
+    CHECK(strstr(g, "(1 car(s) stuck)"));
+    CHECK(strstr(g, "  car #1   in dry queue       -> waits for a post in dry\n"));
+    CHECK(strstr(g, "    dry: 2/2 posts broken       <- ROOT CAUSE: all dry posts are broken "
+                    "(repair 4 min)\n"));
+    LineFree(l);
+}
+
+static void TestWaitGraphDot(void) {
+    Line *l = StuckLine();
+    char path[] = "/tmp/cwmt-dot-XXXXXX";
+    int fd = mkstemp(path);
+    CHECK(fd >= 0);
+    close(fd);
+    CHECK(WaitGraphDot(l, path) == 0);
+    int in = open(path, O_RDONLY);
+    char buf[4096] = "";
+    ssize_t n = read(in, buf, sizeof buf - 1);
+    buf[n > 0 ? n : 0] = '\0';
+    close(in);
+    unlink(path);
+    CHECK(strncmp(buf, "digraph", 7) == 0);
+    CHECK(strstr(buf, "\"car #3\" -> \"stage wax\""));
+    CHECK(strstr(buf, "\"stage tunnel\" -> \"car #3\""));
+    CHECK(strstr(buf, "ROOT CAUSE"));
+    CHECK(WaitGraphDot(l, "/nonexistent/dir/g.dot") == -1);
+    LineFree(l);
+}
+
+static void TestThreadTable(void) {
+    Line *l = StuckLine();
+    const char *t = Capture(PrintThreads, l);
+    CHECK(strncmp(t, "THREADS", 7) == 0);
+    CHECK(strstr(t, "coordinator"));
+    CHECK(strstr(t, "post tunnel.1"));
+    CHECK(strstr(t, "car #7"));
+    LineFree(l);
+}
+
 int main(void) {
     RUN(TestStageCapacity);
     RUN(TestBadCapacity);
@@ -1342,6 +1535,9 @@ int main(void) {
     RUN(TestWakeBeforePark);
     RUN(TestReasonBeforePark);
     RUN(TestStaleReasonDropped);
+    RUN(TestKickRerunsHook);
+    RUN(TestKickCutsDelay);
+    RUN(TestShutdownClosesClock);
     RUN(TestDeterministicOrder);
     RUN(TestNoLocksWhenParking);
     RUN(TestConcurrentEmitOrdered);
@@ -1360,5 +1556,9 @@ int main(void) {
     RUN(TestSabotageDeadlock);
     RUN(TestGrantWakesParkedCar);
     RUN(TestStallQueries);
+    RUN(TestWaitGraphText);
+    RUN(TestWaitGraphBroken);
+    RUN(TestWaitGraphDot);
+    RUN(TestThreadTable);
     return UnitSummary();
 }

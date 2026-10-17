@@ -8,8 +8,12 @@
 /**
  * @brief SimHook: зовётся потоком часов, когда никто не работает.
  *
- * Въезд закрыт и внутри никого - LINE_FINISHED; запрос REQ_NO_RESOURCES -
- * LINE_NO_RESOURCES. В обоих случаях модель останавливается.
+ * По порядку: REQ_SNAPSHOT - граф ожидания и таблица потоков в stderr (бит снимается);
+ * REQ_CLOSE - въезд закрывается (EV_CLOSE), бит снимается; REQ_INTERRUPT - EV_INTERRUPT,
+ * LINE_INTERRUPTED; въезд закрыт и внутри никого - LINE_FINISHED; REQ_NO_RESOURCES -
+ * LINE_NO_RESOURCES; тупик (внутри есть машины, LineProgressPossible ложно и въезд закрыт или
+ * никого не пустит) - EV_STALL, граф ожидания в stdout (и в DOT при -g), LINE_STALLED. Во
+ * всех случаях, кроме первых двух, модель останавливается.
  * @param now текущая минута @param nextWake ближайшее пробуждение (не используется)
  * @param line Line *
  * @return 0 - остановить модель, 1 - продолжать

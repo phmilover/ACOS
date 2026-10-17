@@ -26,6 +26,8 @@ static long totalParks GUARDED_BY(mu) = 0;
 static atomic_int stopping = 0;
 static SimOptions opt;  // пишется в SimInit до создания потоков, дальше только читается
 static Sem clockSem;    // часы ждут на нём момента покоя или остановки
+// SimKick: крючок надо вызвать снова, даже если нового покоя не было (запрос сигнала)
+static atomic_int kicked = 0;
 
 /// Ставит поток в конец очереди запуска.
 static void Enqueue(SimThread *t) REQUIRES(mu) {
@@ -113,6 +115,7 @@ int SimInit(const SimOptions *o) {
     totalParks = 0;
     MutexUnlock(&mu);
     atomic_store(&stopping, 0);
+    atomic_store(&kicked, 0);
     opt = *o;
     SemClose(&clockSem);
     // начальное 1: часы сразу проверяют покой (модель могла начаться без потоков)
@@ -331,14 +334,19 @@ static void WakeDue(void) REQUIRES(mu) {
     }
 }
 
-/// Задержка темпа показа кусками по DELAY_CHUNK_MS с проверкой остановки.
-static void Delay(int ms) {
+/// Задержка темпа показа кусками по DELAY_CHUNK_MS с проверкой остановки и SimKick.
+/// @return 1, если задержку прервал SimKick (крючок надо вызвать снова), иначе 0
+static int Delay(int ms) {
     while (ms > 0 && !SimStopping()) {
+        if (atomic_exchange(&kicked, 0)) {
+            return 1;
+        }
         int step = ms < DELAY_CHUNK_MS ? ms : DELAY_CHUNK_MS;
         struct timespec ts = {.tv_sec = 0, .tv_nsec = (long)step * 1000000L};
         nanosleep(&ts, NULL);
         ms -= step;
     }
+    return 0;
 }
 
 void *SimClockMain(void *unused) {
@@ -352,7 +360,8 @@ void *SimClockMain(void *unused) {
             MutexUnlock(&mu);
             break;
         }
-        if (running > 0 || readyHead || quietSeq == seen) {
+        // тот же покой обрабатываем снова только по SimKick
+        if (running > 0 || readyHead || (quietSeq == seen && !atomic_load(&kicked))) {
             MutexUnlock(&mu);
             continue;
         }
@@ -361,10 +370,11 @@ void *SimClockMain(void *unused) {
         held = 1;  // кто разбудит поток извне во время крючка - встанет в очередь
         MutexUnlock(&mu);
 
-        int go = opt.hook ? opt.hook(at, next, opt.ctx) : next != -1;
-        if (go && next != -1) {
-            Delay(opt.delayMs);
-        }
+        int go;
+        do {  // SimKick во время задержки: крючок ещё раз, в ту же минуту (покой не нарушен)
+            atomic_store(&kicked, 0);
+            go = opt.hook ? opt.hook(at, next, opt.ctx) : next != -1;
+        } while (go && next != -1 && Delay(opt.delayMs));
 
         MutexLock(&mu);
         held = 0;
@@ -399,4 +409,15 @@ long SimTotalParks(void) {
     long n = totalParks;
     MutexUnlock(&mu);
     return n;
+}
+
+void SimKick(void) {
+    atomic_store(&kicked, 1);
+    if (clockSem.h) {  // после SimShutdown будить некого
+        SemPost(&clockSem);
+    }
+}
+
+void SimShutdown(void) {
+    SemClose(&clockSem);
 }
