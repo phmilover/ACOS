@@ -59,4 +59,8 @@ long LockdepViolations(void);
 /// продолжение
 void LockdepSetFatal(int fatal);
 
+/// Что сделать перед аварийным _exit(4) при нарушении (например, вернуть курсор терминала).
+/// NULL - ничего. Функция зовётся в потоке-нарушителе и не должна брать мьютексы.
+void LockdepSetExitHook(void (*hook)(void));
+
 #endif

@@ -12,6 +12,11 @@ static _Thread_local const char *threadName = "?";
 
 static atomic_long violations = 0;
 static atomic_int fatalMode = 1;
+static _Atomic(void (*)(void)) exitHook = NULL;
+
+void LockdepSetExitHook(void (*hook)(void)) {
+    atomic_store(&exitHook, hook);
+}
 
 void LockdepSetThreadName(const char *name) {
     threadName = name ? name : "?";
@@ -43,6 +48,10 @@ static void Report(const Mutex *m, const Mutex *h) {
         // писать некуда, дальше падать нечем
     }
     if (atomic_load(&fatalMode)) {
+        void (*hook)(void) = atomic_load(&exitHook);
+        if (hook) {
+            hook();
+        }
         _exit(4);
     }
 }

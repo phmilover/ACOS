@@ -13,9 +13,11 @@
 #include <stdio.h>
 #include <unistd.h>
 
+#include "auditor.h"
 #include "events.h"
 #include "gantt.h"
 #include "line.h"
+#include "render.h"
 #include "snapshot.h"
 #include "waitgraph.h"
 
@@ -41,17 +43,37 @@ static int Stalled(Line *l, int open, int inside) {
     return inside > 0 && !LineProgressPossible(l) && !(open && LineEntranceMayAccept(l));
 }
 
+/// Живая схема: кадр со счётом аудитора - потоку отрисовки. Снимок берёт только крючок.
+static void SubmitFrame(Snapshot *snap) {
+    snap->checks = AuditorChecks();
+    snap->violations = AuditorViolations();
+    RenderSubmit(snap);
+}
+
+/// Конец модели: статус и последний кадр с ним (шапка «all cars washed» и т.п.).
+static int Finish(Line *l, LineStatus status) {
+    l->status = status;
+    if (RenderActive()) {
+        Snapshot snap;
+        SnapshotTake(l, &snap);
+        SubmitFrame(&snap);
+    }
+    return 0;
+}
+
 int QuiesceHook(int now, int nextWake, void *line) {
     (void)nextWake;
     Line *l = line;
-    // после SimKick крючок зовётся ещё раз в ту же минуту: колонка Ганта - одна на минуту
+    // после SimKick крючок зовётся ещё раз в ту же минуту: колонка Ганта и кадр - один на минуту
     if (now != l->sampledAt) {
         Snapshot snap;
         SnapshotTake(l, &snap);
         GanttSample(&snap, l->cfg);
+        SubmitFrame(&snap);
         l->sampledAt = now;
     }
     if (TakeRequest(l, REQ_SNAPSHOT)) {
+        RenderFlush();  // не перемешать граф с кадром
         int color = isatty(2);
         WaitGraphPrint(2, l, color);
         WaitGraphThreads(2, l->cfg);
@@ -64,19 +86,18 @@ int QuiesceHook(int now, int nextWake, void *line) {
     MutexUnlock(&l->counters);
     if (atomic_load(&l->requests) & REQ_INTERRUPT) {
         EV(EV_INTERRUPT, -1, -1, -1, -1, inside);
-        l->status = LINE_INTERRUPTED;
-        return 0;
+        return Finish(l, LINE_INTERRUPTED);
     }
     if (!open && inside == 0) {
-        l->status = LINE_FINISHED;
-        return 0;
+        return Finish(l, LINE_FINISHED);
     }
     if (atomic_load(&l->requests) & REQ_NO_RESOURCES) {
-        l->status = LINE_NO_RESOURCES;
-        return 0;
+        return Finish(l, LINE_NO_RESOURCES);
     }
     if (Stalled(l, open, inside)) {
         EV(EV_STALL, -1, LineStallCause(l), -1, -1, inside);
+        Finish(l, LINE_STALLED);
+        RenderFlush();  // граф - под последним кадром
         WaitGraphPrint(1, l, isatty(1));
         if (l->cfg->dotFile[0] != '\0') {
             if (WaitGraphDot(l, l->cfg->dotFile) == 0) {
@@ -85,7 +106,6 @@ int QuiesceHook(int now, int nextWake, void *line) {
                 perror("carwash-mt: cannot write the wait-for graph");
             }
         }
-        l->status = LINE_STALLED;
         return 0;
     }
     return 1;

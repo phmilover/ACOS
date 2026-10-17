@@ -1,9 +1,15 @@
 #include "sim.h"
 
+#include <pthread.h>
 #include <stdatomic.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#ifdef __linux__
+#include <sys/syscall.h>
+#include <unistd.h>
+#endif
 
 #include "mutex.h"
 #include "soft_assert.h"
@@ -180,10 +186,23 @@ void SimSpawned(SimThread *t) {
     MutexUnlock(&mu);
 }
 
+/// Системный номер вызывающего потока: для панели потоков, не для логики. 0 - неизвестен.
+static long SystemThreadId(void) {
+#ifdef __linux__
+    return (long)syscall(SYS_gettid);
+#elif defined(__APPLE__)
+    uint64_t id = 0;
+    return pthread_threadid_np(NULL, &id) == 0 ? (long)id : 0;
+#else
+    return 0;
+#endif
+}
+
 SimStatus SimBegin(SimThread *self) {
     SOFT_ASSERT(LockdepHeldCount() == 0, "SimBegin with a mutex held");
     LockdepSetThreadName(self->name);
     MutexLock(&mu);
+    self->sysId = SystemThreadId();
     if (atomic_load(&stopping)) {
         MutexUnlock(&mu);
         return SIM_STOP;

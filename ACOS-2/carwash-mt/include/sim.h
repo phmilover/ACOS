@@ -61,6 +61,7 @@ typedef struct SimThread {
     int reasonPending;      ///< причину задали, пока работал: ближайший SimPark берёт её
     WaitReason pendingWhy;  ///< эта причина
     long parks;             ///< сколько раз вызывал SimPark
+    long sysId;             ///< системный номер потока (ставит SimBegin), 0 - неизвестен
     struct SimThread *nextAll, *nextReady;
 } SimThread;
 

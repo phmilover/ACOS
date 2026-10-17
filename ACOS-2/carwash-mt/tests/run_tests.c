@@ -704,6 +704,60 @@ static void TestResults(void) {
     free(journal);
 }
 
+// Последняя непустая строка вывода содержит needle
+static int LastLineHas(const char *name, const char *needle) {
+    char path[256];
+    TmpPath(path, sizeof(path), name, "out");
+    char *text = ReadFile(path);
+    int ok = 0;
+    if (text) {
+        size_t n = strlen(text);
+        while (n > 0 && (text[n - 1] == '\n' || text[n - 1] == ' ')) {
+            text[--n] = '\0';
+        }
+        const char *last = strrchr(text, '\n');
+        ok = strstr(last ? last + 1 : text, needle) != NULL;
+    }
+    free(text);
+    return ok;
+}
+
+static void TestLiveToFile(void) {
+    puts("== 17. Live view into a file");
+    Run("live", 0, (const char *[]){"-m", "live", "-d", "0", "-s", "1", NULL});
+    Expect("live", "THREADS", "the thread panel is drawn");
+    Expect("live", "\033\\[", "ANSI sequences are present");
+    Expect("live", "\033\\[\\?25l", "the cursor is hidden while drawing");
+    Expect("live", "\033\\[\\?25h", "the cursor is restored");
+    NotExpect("live", "^\\[[0-9]{2}:[0-9]{2}\\] car #", "the event feed does not go to the screen");
+    Report(LastLineHas("live", "Journal saved"), "live", "the last line is the summary");
+    char log[256];
+    TmpPath(log, sizeof(log), "live", "log");
+    char *journal = ReadFile(log);
+    Report(journal && strstr(journal, "arrives at the entrance"), "live",
+           "the feed still goes to the journal");
+    free(journal);
+}
+
+static void TestLiveInterrupt(void) {
+    puts("== 18. Live view: interrupt gives the cursor back");
+    pid_t pid = Start("liveint", (const char *[]){"-m", "live", "-d", "500", "-u", NULL});
+    SleepMs(700);
+    kill(pid, SIGINT);
+    CheckCode("liveint", WaitFor(pid, 1), 3);
+    char path[256];
+    TmpPath(path, sizeof(path), "liveint", "out");
+    char *text = ReadFile(path);
+    // курсор возвращается после последнего кадра (кадр начинается с ESC [ H)
+    const char *lastFrame = text ? strstr(text, "\033[H") : NULL;
+    for (const char *p = lastFrame; p; p = strstr(p + 1, "\033[H")) {
+        lastFrame = p;
+    }
+    Report(lastFrame && strstr(lastFrame, "\033[?25h"), "liveint",
+           "the cursor is shown again after the last frame");
+    free(text);
+}
+
 int main(int argc, char **argv) {
     if (argc > 1) {
         bin = argv[1];
@@ -741,6 +795,8 @@ int main(int argc, char **argv) {
     TestSabotageRaceTsan();
     TestManySeeds();
     TestResults();
+    TestLiveToFile();
+    TestLiveInterrupt();
 
     RemoveTmpDir();
     printf("\nPassed: %d, failed: %d\n", passed, failed);

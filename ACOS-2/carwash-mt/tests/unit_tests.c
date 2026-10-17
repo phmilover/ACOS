@@ -13,12 +13,15 @@
 #include "line.h"
 #include "memory.h"
 #include "mutex.h"
+#include "render.h"
 #include "rng.h"
 #include "sem.h"
 #include "sim.h"
+#include "snapshot.h"
 #include "soft_assert.h"
 #include "stage.h"
 #include "unit.h"
+#include "view_live.h"
 #include "view_log.h"
 #include "waitgraph.h"
 
@@ -1518,6 +1521,129 @@ static void TestThreadTable(void) {
     LineFree(l);
 }
 
+// --- живая схема: панель потоков в снимке, кадр, поток отрисовки ----------------------------
+
+/// Состояние потока машины, как будто она припаркована с такой причиной.
+static void ParkCar(Car *car, WaitKind kind, int stage) {
+    car->th.state = ST_PARKED;
+    car->th.why = (WaitReason){.kind = kind, .stage = stage, .post = 0};
+}
+
+/// Все машины снова «завершены»: иначе LineFree не даст уничтожить их потоки.
+static void UnparkCars(Line *l) {
+    for (Car *c = NULL; (c = LineCar(l, c ? c->id + 1 : 0)) != NULL;) {
+        c->th.state = ST_DONE;
+    }
+}
+
+static void TestSnapshotPanel(void) {
+    Line *l = StuckLine();  // #1, #2 в очереди wax; #3, #4 заблокированы на tunnel; #5 на prewash
+    ParkCar(LineCar(l, 0), WAIT_QUEUE, S_WAX);
+    ParkCar(LineCar(l, 2), WAIT_ROOM, S_WAX);
+    ParkCar(LineCar(l, 3), WAIT_ROOM, S_WAX);
+    ParkCar(LineCar(l, 4), WAIT_ROOM, S_TUNNEL);
+    LineCar(l, 1)->th.state = ST_SLEEPING;
+    Snapshot s;
+    SnapshotTake(l, &s);
+    CHECK(s.threads[TH_CAR] == 5);
+    CHECK(s.phase[TH_CAR][PH_ROOM] == 3);
+    CHECK(s.phase[TH_CAR][PH_QUEUE] == 1);
+    CHECK(s.phase[TH_CAR][PH_SLEEP] == 1);
+    CHECK(s.panelCars == 4);
+    CHECK(s.panel[0].car == 0 && s.panel[0].why == WAIT_QUEUE);  // по возрастанию номера
+    CHECK(s.panel[1].car == 2 && s.panel[1].why == WAIT_ROOM && s.panel[1].stage == S_WAX);
+    CHECK(s.queueProg[S_WAX][0] == P_PREMIUM);
+
+    // тесно: панель на PANEL_CARS мест, машины с WAIT_ROOM вытесняют ждущих в очереди
+    for (int i = 0; i < 10; ++i) {
+        ParkCar(NewCar(l, P_EXPRESS), WAIT_QUEUE, S_TUNNEL);
+    }
+    ParkCar(NewCar(l, P_EXPRESS), WAIT_ROOM, S_DRY);
+    SnapshotTake(l, &s);
+    int rooms = 0;
+    for (int i = 0; i < s.panelCars; ++i) {
+        rooms += s.panel[i].why == WAIT_ROOM;
+    }
+    CHECK(s.panelCars == PANEL_CARS);
+    CHECK(rooms == 4);  // все четыре заблокированные видны
+    UnparkCars(l);
+    LineFree(l);
+}
+
+/// Что ViewLiveDraw нарисовал за один кадр: через pipe (кадр меньше его буфера).
+static char frameOut[16384];
+
+static void TestLiveDrawText(void) {
+    Line *l = StuckLine();
+    ParkCar(LineCar(l, 2), WAIT_ROOM, S_WAX);
+    int fds[2];
+    CHECK(pipe(fds) == 0);
+    ViewLiveInit(fds[1], l->cfg);
+    ViewLiveEnd();
+    ssize_t n = read(fds[0], frameOut, sizeof frameOut - 1);  // очистка экрана и курсор
+    CHECK(n > 0);
+    Snapshot s;
+    SnapshotTake(l, &s);
+    ViewLiveDraw(&s);
+    n = read(fds[0], frameOut, sizeof frameOut - 1);
+    frameOut[n > 0 ? n : 0] = '\0';
+    CHECK(strstr(frameOut, "THREADS"));
+    CHECK(strstr(frameOut, "car #3 "));
+    CHECK(strstr(frameOut, "blocked") && strstr(frameOut, "-> room in wax"));
+    CHECK(strstr(frameOut, "no posts"));  // у wax нет постов
+    CHECK(strstr(frameOut, "entrance"));
+    close(fds[0]);
+    close(fds[1]);
+    UnparkCars(l);
+    LineFree(l);
+}
+
+static void TestRenderFrames(void) {
+    Config c;
+    LoadNormal(&c);
+    int fds[2];
+    CHECK(pipe(fds) == 0);
+    ViewLiveInit(fds[1], &c);
+    long before = SemOpenCount();
+    CHECK(RenderStart() == 0);
+    CHECK(RenderActive() == 1);
+    CHECK(RenderStart() == 0);  // повторный вызов ничего не делает
+    Snapshot s;
+    memset(&s, 0, sizeof s);
+    for (int minute = 0; minute < 3; ++minute) {
+        s.now = minute;
+        RenderSubmit(&s);
+    }
+    RenderFlush();
+    RenderStop();
+    CHECK(RenderActive() == 0);
+    CHECK(SemOpenCount() == before);  // семафоры закрыты
+    ssize_t n = read(fds[0], frameOut, sizeof frameOut - 1);
+    frameOut[n > 0 ? n : 0] = '\0';
+    int frames = 0;
+    for (const char *p = frameOut; (p = strstr(p, "\033[H")) != NULL; p += 3) {
+        ++frames;
+    }
+    CHECK(frames == 3);
+    close(fds[0]);
+    close(fds[1]);
+}
+
+/// Остановка без единого кадра: поток ждёт ready, RenderStop его будит.
+static void TestRenderStopWhileWaiting(void) {
+    Config c;
+    LoadNormal(&c);
+    ViewLiveInit(open("/dev/null", O_WRONLY), &c);
+    struct timespec t0, t1;
+    CHECK(RenderStart() == 0);
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    RenderStop();
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    CHECK(t1.tv_sec - t0.tv_sec < 1);
+    RenderStop();  // повторно безопасно
+    CHECK(RenderActive() == 0);
+}
+
 // --- аудитор: события подаются прямо в AuditorListener, без шины ---------------------------
 
 static Config auditCfg;
@@ -1682,6 +1808,10 @@ int main(void) {
     RUN(TestWaitGraphBroken);
     RUN(TestWaitGraphDot);
     RUN(TestThreadTable);
+    RUN(TestSnapshotPanel);
+    RUN(TestLiveDrawText);
+    RUN(TestRenderFrames);
+    RUN(TestRenderStopWhileWaiting);
     RUN(TestAuditorCleanRun);
     RUN(TestAuditorCapacity);
     RUN(TestAuditorTwoPlaces);
