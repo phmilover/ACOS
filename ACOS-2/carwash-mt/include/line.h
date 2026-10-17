@@ -16,6 +16,7 @@
 #define LINE_H
 
 #include <pthread.h>
+#include <stdatomic.h>
 
 #include "config.h"
 #include "mutex.h"
@@ -35,14 +36,18 @@ typedef enum { RES_NONE, RES_QUEUE, RES_SEAT } Reservation;
 /// Где машина.
 typedef enum { CAR_ARRIVING, CAR_QUEUE, CAR_POST, CAR_DONE, CAR_REJECTED } CarPlace;
 
+struct Line;
+
 /// Машина; у каждой свой поток.
 typedef struct Car {
+    struct Line *line;  ///< линия, на которой машина (задаётся при создании)
     int id, program;
     int step;  ///< индекс стадии маршрута, на которой машина сейчас
     SimThread th;
     Rng rng;
     pthread_t tid;
-    int joined;  ///< координатор уже собрал поток (pthread_join)
+    int joined;       ///< поток уже собран (pthread_join) или не создавался
+    atomic_int over;  ///< машина уехала или получила отказ: поток можно собирать
     // место, бронь и очередь ожидания - под мьютексом той стадии, к которой относятся
     CarPlace place;
     int stage, post, seat;  ///< где стоит (-1 - не относится)
@@ -58,10 +63,15 @@ typedef struct {
     int car;
     int left;      ///< минут до конца операции
     int duration;  ///< длительность операции
+    /// минута начала операции: пост считает её минуты со следующей. В обычном режиме машина
+    /// может сесть на пост в ту же минуту, когда его поток уже отработал или ещё нет, - без
+    /// этой отметки операция в одном случае шла бы на минуту короче
+    int start;
 } Seat;
 
 /// Пост стадии. Поля - под мьютексом своей стадии.
 typedef struct Post {
+    struct Line *line;  ///< линия, на которой пост (задаёт LineInit)
     int stage, index, capacity;
     Seat seat[MAX_CAPACITY];
     int reserved;  ///< забронированных мест (left < 0)

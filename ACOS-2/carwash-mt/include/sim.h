@@ -93,7 +93,8 @@ int SimInit(const SimOptions *o);
 /// @return 0 или -1, если не открылся семафор
 int SimThreadInit(SimThread *t, ThreadKind kind, int id, const char *name, int order);
 
-/// Снимает регистрацию и закрывает семафор. Поток должен быть в ST_DONE (собран).
+/// Снимает регистрацию и закрывает семафор. Поток должен быть в ST_DONE (собран). Повторный
+/// вызов безопасен и ничего не делает.
 void SimThreadDestroy(SimThread *t);
 
 /// Зовёт создатель до pthread_create: поток становится ST_READY и встаёт в очередь запуска.

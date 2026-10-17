@@ -31,6 +31,7 @@ static int InitPosts(Line *l, int s) {
     const StageSpec *spec = &l->cfg->stage[s];
     for (int p = 0; p < MAX_POSTS; ++p) {
         Post *post = &l->stage[s].post[p];
+        post->line = l;
         post->stage = s;
         post->index = p;
         post->capacity = spec->capacity;

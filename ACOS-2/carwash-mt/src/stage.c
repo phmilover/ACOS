@@ -136,7 +136,8 @@ static void StartOperation(Line *l, Stage *st, Car *car, int p, int k) REQUIRES(
     Post *post = &st->post[p];
     SOFT_ASSERT(post->repair == 0, "operation starts on a broken post");
     int duration = RngRange(&post->rng, spec->tmin, spec->tmax);
-    post->seat[k] = (Seat){.car = car->id, .left = duration, .duration = duration};
+    post->seat[k] =
+        (Seat){.car = car->id, .left = duration, .duration = duration, .start = SimNow()};
     car->place = CAR_POST;
     car->stage = st->index;
     car->post = p;
