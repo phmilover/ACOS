@@ -76,11 +76,6 @@ static int ChooseProgram(Car *car, const Config *cfg) {
     return p;
 }
 
-/// Саботаж SAB_RACE: счётчик без мьютекса counters - гонка, которую должен поймать TSan.
-static void RacyServedIncrement(Line *l) NO_TSA {
-    l->served++;
-}
-
 /// Въезд на первую стадию. @return 1 - машина на линии, 0 - отказ
 static int Enter(Line *l, Car *car, int first) {
     Stage *st = &l->stage[first];
@@ -148,15 +143,8 @@ static void Finish(Line *l, Car *car, int cur) {
                        .arg = car->finished - car->arrived,
                        .arg2 = car->service});
     MutexUnlock(&st->m);
-    // счётчики - после мьютекса стадии: иначе он сам упорядочил бы саботажный инкремент
-    // (все программы кончаются на одной стадии) и гонку было бы не увидеть
-    if (l->cfg->sabotage == SAB_RACE) {
-        RacyServedIncrement(l);
-        MutexLock(&l->counters);
-    } else {
-        MutexLock(&l->counters);
-        l->served++;
-    }
+    MutexLock(&l->counters);
+    l->served++;
     l->inside--;
     MutexUnlock(&l->counters);
 }

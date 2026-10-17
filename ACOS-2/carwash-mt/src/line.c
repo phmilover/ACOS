@@ -86,6 +86,7 @@ int LineInit(Line *l, const Config *cfg) {
     l->nextTicket = 0;
     MutexUnlock(&l->counters);
     l->status = LINE_RUNNING;
+    l->sampledAt = -1;
     return 0;
 }
 

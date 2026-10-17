@@ -590,6 +590,120 @@ static void TestUnlimitedReaping(void) {
     Report(got == 4 && places > 0 && created > 100 && peak <= places + 1 && peak > 0, "reap", what);
 }
 
+static void TestSabotageOverflow(void) {
+    puts("== 17. Sabotage -x overflow: the auditor and SOFT_ASSERT catch it");
+    Run("overflow", 4,
+        (const char *[]){"-x", "overflow", "-c", "data/rush-hour.cfg", "-s", "3", NULL});
+    Expect("overflow", "I5 violated", "the auditor reports I5");
+    Expect("overflow", "soft assert failed", "SOFT_ASSERT fires too");
+    Run("overflow-D", 4,
+        (const char *[]){"-x", "overflow", "-c", "data/rush-hour.cfg", "-s", "3", "-D", NULL});
+    Expect("overflow-D", "I5 violated", "-D: the auditor reports I5");
+    Expect("overflow-D", "soft assert failed", "-D: SOFT_ASSERT fires too");
+}
+
+static void TestSabotageDeadlock(void) {
+    puts("== 18. Sabotage -x deadlock: LOCKDEP reports it, the program does not hang");
+    // фатальный LOCKDEP выходит через _exit(4) при живых потоках - так задумано, и сборка -tsan
+    // сочла бы это утечкой потоков; гонки данных TSan при этом по-прежнему ищет
+    pid_t pid = StartEnv("deadlock", "TSAN_OPTIONS=report_thread_leaks=0",
+                         (const char *[]){"-x", "deadlock", "-c", "data/rush-hour.cfg", NULL});
+    CheckCode("deadlock", WaitFor(pid, 5), 4);
+    Expect("deadlock", "LOCKDEP:", "lock order violation is reported");
+}
+
+// Оканчивается ли строка s на suffix
+static int EndsWith(const char *s, const char *suffix) {
+    size_t n = strlen(s), m = strlen(suffix);
+    return n >= m && strcmp(s + n - m, suffix) == 0;
+}
+
+static void TestSabotageRaceTsan(void) {
+    puts("== 19. Sabotage -x race: ThreadSanitizer catches it");
+    if (!EndsWith(bin, "-tsan")) {
+        puts("  SKIP race: needs the -tsan build (./bin/run_tests ./bin/carwash-mt-tsan)");
+        return;
+    }
+    // здесь отчёт TSan - ожидаемый результат, поэтому не CheckCode (он считает его провалом).
+    // Код выхода не проверяем: найдя гонку, TSan сам меняет его (66, а на macOS по умолчанию
+    // abort_on_error=1 - SIGABRT при выходе)
+    int code =
+        Wait(Start("race", (const char *[]){"-x", "race", "-c", "data/rush-hour.cfg", NULL}));
+    Report(code != -2, "race", "the run finishes in time");
+    Expect("race", "ThreadSanitizer: data race", "the data race is reported");
+}
+
+// Сценарии с ожидаемым кодом выхода для TestManySeeds
+static const struct {
+    const char *cfg;
+    int code;
+} SEED_SCENARIOS[] = {
+    {"data/normal.cfg", 0},   {"data/rush-hour.cfg", 0},  {"data/breakdowns.cfg", 0},
+    {"data/capacity.cfg", 0}, {"data/dead-stage.cfg", 2},
+};
+#define SEED_BATCH 8  // столько прогонов идут одновременно
+
+static void TestManySeeds(void) {
+    puts("== 20. Many seeds: no violations, no soft asserts, no LOCKDEP");
+    const int scenarios = (int)(sizeof(SEED_SCENARIOS) / sizeof(SEED_SCENARIOS[0]));
+    for (int det = 0; det <= 1; ++det) {
+        int seeds = det ? 10 : 40, total = scenarios * seeds, bad = 0, runs = 0;
+        char firstBad[160] = "";
+        for (int from = 0; from < total; from += SEED_BATCH) {
+            pid_t pid[SEED_BATCH];
+            char name[SEED_BATCH][32];
+            int n = 0;
+            for (int i = from; i < total && n < SEED_BATCH; ++i, ++n) {
+                char seed[16];
+                snprintf(seed, sizeof(seed), "%d", (i % seeds) + 1);
+                snprintf(name[n], sizeof(name[n]), "seeds-%d", n);
+                const char *cfg = SEED_SCENARIOS[i / seeds].cfg;
+                pid[n] =
+                    det ? Start(name[n],
+                                (const char *[]){"-c", cfg, "-s", seed, "-d", "0", "-D", NULL})
+                        : Start(name[n], (const char *[]){"-c", cfg, "-s", seed, "-d", "0", NULL});
+            }
+            for (int k = 0; k < n; ++k) {
+                int i = from + k;
+                int code = Wait(pid[k]);
+                ++runs;
+                int wrong = code != SEED_SCENARIOS[i / seeds].code ||
+                            Matches(name[k], "out", "AUDITOR: \\[|violated") ||
+                            Matches(name[k], "out", "soft assert") ||
+                            Matches(name[k], "out", "LOCKDEP") ||
+                            Matches(name[k], "out", "WARNING: ThreadSanitizer");
+                if (wrong && bad++ == 0) {
+                    snprintf(firstBad, sizeof(firstBad), "; first: %s -s %d%s, exit code %d",
+                             SEED_SCENARIOS[i / seeds].cfg, (i % seeds) + 1, det ? " -D" : "",
+                             code);
+                }
+            }
+        }
+        char what[256];
+        snprintf(what, sizeof(what), "%s%d runs, %d bad%s", det ? "-D: " : "", runs, bad, firstBad);
+        Report(bad == 0 && runs == total, "seeds", what);
+    }
+}
+
+static void TestResults(void) {
+    puts("== 21. Results: statistics, timeline of posts, auditor summary");
+    Run("results", 0, (const char *[]){"-c", "data/rush-hour.cfg", "-s", "3", NULL});
+    Expect("results", "RESULTS", "results are printed");
+    Expect("results", "By program", "per-program statistics");
+    Expect("results", "TIMELINE OF POSTS", "timeline of posts (Gantt chart)");
+    Expect("results", "^Threads +: created", "thread statistics");
+    Expect("results", "^Blocked time +: [0-9]+ car-minutes waiting for room", "blocked time");
+    Expect("results", "Bottleneck", "the bottleneck stage is named");
+    Expect("results", "AUDITOR: invariants checked after each of [1-9][0-9]* events, violations: 0",
+           "auditor summary");
+    char log[256];
+    TmpPath(log, sizeof(log), "results", "log");
+    char *journal = ReadFile(log);
+    Report(journal && strstr(journal, "TIMELINE OF POSTS") && strstr(journal, "AUDITOR"), "results",
+           "journal has the timeline and the auditor summary");
+    free(journal);
+}
+
 int main(int argc, char **argv) {
     if (argc > 1) {
         bin = argv[1];
@@ -622,6 +736,11 @@ int main(int argc, char **argv) {
     TestSnapshotSignal();
     TestCloseSignal();
     TestUnlimitedReaping();
+    TestSabotageOverflow();
+    TestSabotageDeadlock();
+    TestSabotageRaceTsan();
+    TestManySeeds();
+    TestResults();
 
     RemoveTmpDir();
     printf("\nPassed: %d, failed: %d\n", passed, failed);

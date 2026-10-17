@@ -65,6 +65,12 @@ static void Work(Line *l, Stage *st, Post *post, int now) REQUIRES(st->m) {
     }
 }
 
+/// Саботаж SAB_RACE: общий счётчик без мьютекса. Посты одной минуты работают параллельно, так
+/// что это гонка данных, которую должен поймать ThreadSanitizer.
+static void RacyTick(Line *l) NO_TSA {
+    l->raceTicks++;
+}
+
 void *PostMain(void *arg) {
     Post *post = arg;
     Line *l = post->line;
@@ -73,6 +79,9 @@ void *PostMain(void *arg) {
         EventsSetSource(&post->th);
         // минута 0 - открытие: первая минута работы - первая
         while (SimSleep(&post->th, 1) == SIM_OK) {
+            if (l->cfg->sabotage == SAB_RACE) {
+                RacyTick(l);  // до мьютекса стадии: иначе он упорядочил бы посты одной стадии
+            }
             int now = SimNow();
             MutexLock(&st->m);
             if (UpdateEquipment(l, st, post)) {

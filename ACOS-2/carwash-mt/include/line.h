@@ -125,6 +125,10 @@ typedef struct Line {
 
     _Atomic int requests;  ///< REQ_* (ставит поток сигналов)
     LineStatus status;     ///< меняют только часы в момент покоя
+    int sampledAt;         ///< минута последнего снимка для Ганта (-1 - не было); только часы
+    /// Саботаж SAB_RACE: потоки постов увеличивают его каждую минуту без мьютекса - гонка
+    /// данных, которую должен поймать ThreadSanitizer. Без саботажа не трогается
+    long raceTicks;
     SimThread coordTh;
     pthread_t coordTid;
     Rng coordRng;

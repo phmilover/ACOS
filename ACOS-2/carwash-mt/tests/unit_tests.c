@@ -7,6 +7,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "auditor.h"
 #include "config.h"
 #include "events.h"
 #include "line.h"
@@ -1517,6 +1518,127 @@ static void TestThreadTable(void) {
     LineFree(l);
 }
 
+// --- аудитор: события подаются прямо в AuditorListener, без шины ---------------------------
+
+static Config auditCfg;
+static int auditNull = -1;  ///< /dev/null: сообщения о нарушениях в тестах не нужны
+
+/// Свежий аудитор на линии «a (1 пост, очередь 1) -> b (1 пост ёмкостью 2, очередь 1)».
+static void AuditStart(void) {
+    char err[256];
+    ConfigDefaults(&auditCfg);
+    CHECK(ConfigParseText(&auditCfg,
+                          "stage = a 1 1 2 1\nstage = b 1 1 2 1 2\nprogram = P 1 1 a b\n", err,
+                          sizeof err) == 0);
+    if (auditNull < 0) {
+        auditNull = open("/dev/null", O_WRONLY);
+    }
+    AuditorInit(auditNull, &auditCfg);
+}
+
+static void Feed(EventType type, int car, int stage, int post, int arg) {
+    Event e = {.type = type, .car = car, .stage = stage, .post = post, .program = 0, .arg = arg};
+    AuditorListener(&e);
+}
+
+/// Машина приезжает и садится на пост a.
+static void FeedArriveOnA(int car) {
+    Feed(EV_ARRIVE, car, -1, -1, 0);
+    Feed(EV_PROGRAM, car, -1, -1, 0);
+    Feed(EV_ENTER, car, 0, 0, 0);
+    Feed(EV_OP_START, car, 0, 0, 1);
+}
+
+static void TestAuditorCleanRun(void) {
+    AuditStart();
+    FeedArriveOnA(0);
+    Feed(EV_OP_END, 0, 0, 0, 0);
+    Feed(EV_LEAVE, 0, 0, 0, 0);
+    // между LEAVE и MOVE машины 0 на освободившийся пост садится машина 1 (эстафета)
+    Feed(EV_ARRIVE, 1, -1, -1, 0);
+    Feed(EV_PROGRAM, 1, -1, -1, 0);
+    Feed(EV_QUEUE, 1, 0, -1, 1);
+    Feed(EV_ENTER, 1, 0, 0, 0);
+    Feed(EV_OP_START, 1, 0, 0, 1);
+    Feed(EV_MOVE, 0, 1, -1, 0);
+    Feed(EV_ENTER, 0, 1, 0, 0);
+    Feed(EV_OP_START, 0, 1, 0, 1);
+    Feed(EV_LEAVE, 1, 0, 0, 0);
+    Feed(EV_MOVE, 1, 1, -1, 0);
+    Feed(EV_ENTER, 1, 1, 0, 0);  // ёмкость b - 2: вторая машина на том же посту законна
+    Feed(EV_OP_START, 1, 1, 0, 1);
+    Feed(EV_LEAVE, 0, 1, 0, 0);
+    Feed(EV_DONE, 0, 1, -1, 5);
+    Feed(EV_ARRIVE, 2, -1, -1, 0);
+    Feed(EV_REJECT, 2, 0, -1, 1);
+    CHECK(AuditorViolations() == 0);
+    CHECK(AuditorChecks() == 22);
+}
+
+static void TestAuditorCapacity(void) {
+    AuditStart();
+    FeedArriveOnA(0);
+    FeedArriveOnA(1);  // у поста a ёмкость 1
+    CHECK(AuditorViolations() == 1);
+}
+
+static void TestAuditorTwoPlaces(void) {
+    AuditStart();
+    FeedArriveOnA(0);
+    Feed(EV_MOVE, 0, 1, -1, 0);  // переезд без EV_LEAVE: машина всё ещё на посту a
+    CHECK(AuditorViolations() == 1);
+
+    AuditStart();
+    FeedArriveOnA(0);
+    Feed(EV_LEAVE, 0, 0, 0, 0);
+    Feed(EV_QUEUE, 0, 1, -1, 1);  // в очередь b без EV_MOVE
+    CHECK(AuditorViolations() == 1);
+
+    AuditStart();
+    FeedArriveOnA(0);
+    Feed(EV_LEAVE, 0, 0, 0, 0);
+    Feed(EV_LEAVE, 0, 0, 0, 0);  // второй раз с того же поста
+    CHECK(AuditorViolations() == 1);
+}
+
+static void TestAuditorRoute(void) {
+    AuditStart();
+    Feed(EV_ARRIVE, 0, -1, -1, 0);
+    Feed(EV_PROGRAM, 0, -1, -1, 0);
+    Feed(EV_ENTER, 0, 1, 0, 0);  // маршрут начинается с a
+    CHECK(AuditorViolations() == 1);
+
+    AuditStart();
+    FeedArriveOnA(0);
+    Feed(EV_LEAVE, 0, 0, 0, 0);
+    Feed(EV_DONE, 0, 0, -1, 3);  // уехала, пройдя 1 стадию из 2
+    CHECK(AuditorViolations() == 1);
+}
+
+static void TestAuditorBrokenPost(void) {
+    AuditStart();
+    Feed(EV_FAIL, -1, 0, 0, 5);
+    FeedArriveOnA(0);  // операция на сломанном посту
+    CHECK(AuditorViolations() == 1);
+
+    AuditStart();
+    Feed(EV_FAIL, -1, 0, 0, 5);
+    Feed(EV_REPAIR, -1, 0, 0, 0);
+    FeedArriveOnA(0);
+    CHECK(AuditorViolations() == 0);
+}
+
+static void TestAuditorQueue(void) {
+    AuditStart();
+    for (int car = 0; car < 2; ++car) {
+        Feed(EV_ARRIVE, car, -1, -1, 0);
+        Feed(EV_PROGRAM, car, -1, -1, 0);
+        Feed(EV_QUEUE, car, 0, -1, car + 1);  // очередь a вмещает одну машину
+    }
+    CHECK(AuditorViolations() == 1);
+    AuditorFree();
+}
+
 int main(void) {
     RUN(TestStageCapacity);
     RUN(TestBadCapacity);
@@ -1560,5 +1682,11 @@ int main(void) {
     RUN(TestWaitGraphBroken);
     RUN(TestWaitGraphDot);
     RUN(TestThreadTable);
+    RUN(TestAuditorCleanRun);
+    RUN(TestAuditorCapacity);
+    RUN(TestAuditorTwoPlaces);
+    RUN(TestAuditorRoute);
+    RUN(TestAuditorBrokenPost);
+    RUN(TestAuditorQueue);
     return UnitSummary();
 }

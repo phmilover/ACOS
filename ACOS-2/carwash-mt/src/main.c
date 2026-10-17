@@ -17,15 +17,18 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "auditor.h"
 #include "config.h"
 #include "coordinator.h"
 #include "events.h"
+#include "gantt.h"
 #include "line.h"
 #include "post.h"
 #include "quiesce.h"
 #include "signals.h"
 #include "sim.h"
 #include "soft_assert.h"
+#include "stats.h"
 #include "view_log.h"
 
 static void Usage(const char *prog) {
@@ -136,49 +139,18 @@ static int ApplyOptions(const Options *o, Config *cfg) {
     return 0;
 }
 
-static const char *Outcome(LineStatus status) {
-    switch (status) {
-    case LINE_FINISHED: return "finished: entrance closed and every accepted car washed";
-    case LINE_STALLED: return "STALLED: remaining cars can never be served";
-    case LINE_INTERRUPTED: return "INTERRUPTED by user";
-    case LINE_NO_RESOURCES: return "STOPPED: not enough resources (thread or semaphore)";
-    default: return "running";
-    }
+/// Итоги прогона: статистика, диаграмма Ганта, сводка аудитора (как в ИЗ1).
+static void PrintResults(int fd, Line *l, int color) {
+    StatsPrint(fd, l);
+    GanttPrint(fd, l->cfg, color);
+    AuditorPrint(fd);
 }
 
-/// Потоки, которые программа создаёт помимо машин: посты, координатор, часы, сигналы.
-static int ServiceThreads(const Config *cfg) {
-    int n = 3;
-    for (int s = 0; s < cfg->stages; ++s) {
-        n += cfg->stage[s].posts;
-    }
-    return n;
-}
-
-/// Итоги прогона (в этой задаче - исход и счётчики; полная статистика - stats.c).
-static void PrintResults(int fd, Line *l, int now) {
-    char from[16], to[16];
-    EventClock(0, from, sizeof(from));
-    EventClock(now, to, sizeof(to));
-    MutexLock(&l->registry);
-    int arrived = l->carCount, peak = l->peakAlive;
-    MutexUnlock(&l->registry);
-    MutexLock(&l->counters);
-    int rejected = l->rejected, served = l->served, inside = l->inside, failures = l->failures;
-    MutexUnlock(&l->counters);
-
-    dprintf(fd, "\n=================== RESULTS ===================\n");
-    dprintf(fd, "Outcome        : %s\n", Outcome(l->status));
-    dprintf(fd, "Model time     : %s - %s (%d min)\n", from, to, now);
-    dprintf(fd, "Cars arrived   : %d (accepted %d, turned away %d)\n", arrived, arrived - rejected,
-            rejected);
-    dprintf(fd, "Cars washed    : %d, still inside: %d\n", served, inside);
-    dprintf(fd, "Failures       : %d\n", failures);
-    dprintf(fd, "Threads        : created %d (cars %d), peak alive cars %d, parks %ld\n",
-            arrived + ServiceThreads(l->cfg), arrived, peak, SimTotalParks());
-}
-
+/// Нарушение инварианта (аудитор или LOCKDEP в нефатальном режиме) важнее исхода модели.
 static int ExitCode(const Line *l) {
+    if (AuditorViolations() > 0 || LockdepViolations() > 0) {
+        return 4;
+    }
     switch (l->status) {
     case LINE_FINISHED: return 0;
     case LINE_STALLED: return 2;
@@ -318,6 +290,9 @@ int main(int argc, char **argv) {
     EventsInit(&cfg);
     ViewLogInit(1, tty, journal, cfg.threadColumn);
     EventsSubscribe(ViewLogListener);
+    AuditorInit(2, &cfg);
+    EventsSubscribe(AuditorListener);
+    EventsSubscribe(StatsListener);
     dprintf(1, "=== AUTOMATIC CAR WASH: simulation of one working day ===\n");
     ConfigPrint(&cfg, 1);
     dprintf(1, "Mode: %s\n\n", cfg.deterministic ? "deterministic (-D)" : "threads in parallel");
@@ -334,10 +309,9 @@ int main(int argc, char **argv) {
     if (line.status == LINE_NO_RESOURCES) {
         NoResources();
     }
-    int now = SimNow();
-    PrintResults(1, &line, now);
+    PrintResults(1, &line, tty);
     if (journal != -1) {
-        PrintResults(journal, &line, now);
+        PrintResults(journal, &line, 0);
         dprintf(journal, "seed %u (repeat the run with -s %u)\n", cfg.seed, cfg.seed);
         close(journal);
         dprintf(1, "Journal saved to %s (seed %u)\n", cfg.journal, cfg.seed);
@@ -348,6 +322,9 @@ int main(int argc, char **argv) {
     }
 
     int code = ExitCode(&line);
+    AuditorFree();
+    StatsFree();
+    GanttFree();
     LineFree(&line);
     SimShutdown();
     return code;

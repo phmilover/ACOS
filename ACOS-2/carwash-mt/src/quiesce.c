@@ -1,11 +1,11 @@
 /**
  * @file quiesce.c
- * @brief Крючок момента покоя: запросы сигналов, конец моделирования, тупик.
+ * @brief Крючок момента покоя: снимок для Ганта, запросы сигналов, конец моделирования, тупик.
  *
- * Порядок разбора: снимок (SIGUSR1), закрытие въезда (SIGUSR2), прерывание (SIGINT/SIGTERM),
- * конец, нехватка ресурсов, тупик. В покое никто из потоков модели не работает, поэтому
- * состояние линии устойчиво; мьютексы всё равно берутся по правилам рангов: counters не
- * держим, пока зовём запросы стадий (порядок stage -> counters).
+ * Порядок разбора: снимок линии для диаграммы Ганта (раз в минуту), снимок (SIGUSR1), закрытие
+ * въезда (SIGUSR2), прерывание (SIGINT/SIGTERM), конец, нехватка ресурсов, тупик. В покое никто из
+ * потоков модели не работает, поэтому состояние линии устойчиво; мьютексы всё равно берутся по
+ * правилам рангов: counters не держим, пока зовём запросы стадий (порядок stage -> counters).
  */
 
 #include "quiesce.h"
@@ -14,7 +14,9 @@
 #include <unistd.h>
 
 #include "events.h"
+#include "gantt.h"
 #include "line.h"
+#include "snapshot.h"
 #include "waitgraph.h"
 
 /// Снимает бит запроса. @return 1, если он стоял
@@ -40,9 +42,15 @@ static int Stalled(Line *l, int open, int inside) {
 }
 
 int QuiesceHook(int now, int nextWake, void *line) {
-    (void)now;
     (void)nextWake;
     Line *l = line;
+    // после SimKick крючок зовётся ещё раз в ту же минуту: колонка Ганта - одна на минуту
+    if (now != l->sampledAt) {
+        Snapshot snap;
+        SnapshotTake(l, &snap);
+        GanttSample(&snap, l->cfg);
+        l->sampledAt = now;
+    }
     if (TakeRequest(l, REQ_SNAPSHOT)) {
         int color = isatty(2);
         WaitGraphPrint(2, l, color);
