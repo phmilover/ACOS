@@ -22,7 +22,7 @@ Mode: threads in parallel
  wax        [2m·[0m  [2m·[0m         [2mfree   [0m   [K
  dry        [2m·[0m  [2m·[0m  [2m·[0m      [2mfree   [0m      [2mfree   [0m   [K
 [K
- washed 39[2m · [0minside 0[2m · [0mturned away 1[2m · [0mbreakdowns 9   [32m✓[0m[2m 723 checks ok[0m[K
+ washed 39[2m · [0minside 0[2m · [0mturned away 1[2m · [0mbreakdowns 9   [32m✓[0m[2m 725 checks ok[0m[K
 [K
 [1m THREADS[0m  coordinator 0[2m · [0mposts 6 (6 sleeping)[2m · [0mcars 0[2m · [0mparks 116[K
 [K
@@ -40,7 +40,7 @@ Mode: threads in parallel
  wax        [2m·[0m  [2m·[0m         [2mfree   [0m   [K
  dry        [2m·[0m  [2m·[0m  [2m·[0m      [2mfree   [0m      [2mfree   [0m   [K
 [K
- washed 39[2m · [0minside 0[2m · [0mturned away 1[2m · [0mbreakdowns 9   [32m✓[0m[2m 723 checks ok[0m[K
+ washed 39[2m · [0minside 0[2m · [0mturned away 1[2m · [0mbreakdowns 9   [32m✓[0m[2m 725 checks ok[0m[K
 [K
 [1m THREADS[0m  coordinator 0[2m · [0mposts 6 (6 sleeping)[2m · [0mcars 0[2m · [0mparks 116[K
 [K
@@ -56,14 +56,14 @@ Outcome        : finished: entrance closed and every accepted car washed
 Model time     : 08:00 - 11:03 (183 min)
 Cars arrived   : 40 (accepted 39, turned away 1)
 Cars washed    : 39, still inside: 0
-Time at wash   : avg 22.5 min, max 38 min
-Waiting        : avg 7.1 min per car (queues, blocked posts, repairs)
+Time at wash   : avg 22.7 min, max 38 min
+Waiting        : avg 7.2 min per car (queues, blocked posts, repairs)
 Throughput     : 12.8 cars per hour
 Failures       : 9, blocked-post episodes: 1
 Blocked time   : 2 car-minutes waiting for room
-By program     : Express    14 washed, avg 17.5 min
-                 Standard   14 washed, avg 22.9 min
-                 Premium    11 washed, avg 28.5 min
+By program     : Express    14 washed, avg 17.1 min
+                 Standard   14 washed, avg 23.1 min
+                 Premium    11 washed, avg 29.3 min
 Threads        : created 49 (cars 40), peak alive cars 8, parks 116
 
 TIMELINE OF POSTS, 1 column = 4 min:  # busy  = blocked  X broken  . idle
@@ -71,12 +71,12 @@ TIMELINE OF POSTS, 1 column = 4 min:  # busy  = blocked  X broken  . idle
 prewash  P1 |#.########...###....########.###XXXX###.....XX|  51%    1%   11%
 tunnel   P1 |########################################XXX...|  82%    0%    7%
 tunnel   P2 |.##.################XXX#################......|  76%    0%    6%
-wax      P1 |..##.######.......##......###...##...XXXX#.##.|  30%    0%    7%
-dry      P1 |..#.#.#.###XX###XX###..####.###.#######.###.##|  51%    0%    9%
-dry      P2 |......##.#####.#.XX###.XXX###.#..#####........|  34%    0%   10%
+wax      P1 |..##.######.......##......###...##...XXXX#.##.|  31%    0%    7%
+dry      P1 |..#.###.###XXX##XX###..####.#####.###.#.###.##|  55%    0%    9%
+dry      P2 |......##.#####.#.XX###.XXX###.#...####........|  31%    0%   10%
 Bottleneck     : tunnel (posts busy 79% of the time)
 Most blocked   : prewash (posts held finished cars 1% of the time)
-AUDITOR: invariants checked after each of 723 events, violations: 0
+AUDITOR: invariants checked after each of 725 events, violations: 0
   I1 a post holds at most its capacity    ok
   I2 a car is in exactly one place        ok
   I3 stages follow the program order      ok

@@ -47,16 +47,16 @@ Mode: threads in parallel
 [08:12] car #4 enters tunnel post 1
 [08:12] tunnel post 1 starts on car #4 Express (9 min)
 [08:12] car #1 moves tunnel -> dry
-[08:12] car #1 enters dry post 1
-[08:12] dry post 1 starts on car #1 Standard (4 min)
-[08:12] car #7 arrives at the entrance
-[08:12] car #7 chooses Express (tunnel > dry)
-[08:12] car #7 turned away: tunnel queue is full (1/1)
 [08:12] car #2 leaves prewash post 1
 [08:12] car #3 enters prewash post 1
 [08:12] prewash post 1 starts on car #3 Standard (3 min)
 [08:12] car #2 moves prewash -> tunnel
+[08:12] car #1 enters dry post 1
+[08:12] dry post 1 starts on car #1 Standard (4 min)
 [08:12] car #2 waits in tunnel queue (1/1)
+[08:12] car #7 arrives at the entrance
+[08:12] car #7 chooses Express (tunnel > dry)
+[08:12] car #7 turned away: tunnel queue is full (1/1)
 [08:13] car #8 arrives at the entrance
 [08:13] car #8 chooses Express (tunnel > dry)
 [08:13] car #8 turned away: tunnel queue is full (1/1)
@@ -128,10 +128,10 @@ Mode: threads in parallel
 [08:38] car #3 enters tunnel post 1
 [08:38] tunnel post 1 starts on car #3 Standard (6 min)
 [08:38] car #2 moves tunnel -> dry
-[08:38] car #21 arrives at the entrance
-[08:38] car #21 chooses Premium (prewash > tunnel > wax > dry)
 [08:38] car #2 enters dry post 1
 [08:38] dry post 1 starts on car #2 Standard (4 min)
+[08:38] car #21 arrives at the entrance
+[08:38] car #21 chooses Premium (prewash > tunnel > wax > dry)
 [08:38] car #5 leaves prewash post 1
 [08:38] car #6 enters prewash post 1
 [08:38] prewash post 1 starts on car #6 Standard (5 min)
@@ -216,6 +216,8 @@ Mode: threads in parallel
 [08:59] car #6 leaves tunnel post 1
 [08:59] car #10 enters tunnel post 1
 [08:59] tunnel post 1 starts on car #10 Premium (6 min)
+[08:59] car #33 arrives at the entrance
+[08:59] car #33 chooses Premium (prewash > tunnel > wax > dry)
 [08:59] car #6 moves tunnel -> dry
 [08:59] car #6 enters dry post 1
 [08:59] dry post 1 starts on car #6 Standard (4 min)
@@ -224,8 +226,6 @@ Mode: threads in parallel
 [08:59] prewash post 1 starts on car #21 Premium (3 min)
 [08:59] car #13 moves prewash -> tunnel
 [08:59] car #13 waits in tunnel queue (1/1)
-[08:59] car #33 arrives at the entrance
-[08:59] car #33 chooses Premium (prewash > tunnel > wax > dry)
 [08:59] car #33 waits in prewash queue (3/3)
 [09:00] car #34 arrives at the entrance
 [09:00] car #34 chooses Premium (prewash > tunnel > wax > dry)
@@ -248,13 +248,13 @@ Mode: threads in parallel
 [09:05] car #10 moves tunnel -> wax
 [09:05] car #10 enters wax post 1
 [09:05] wax post 1 starts on car #10 Premium (6 min)
-[09:05] car #37 arrives at the entrance
-[09:05] car #37 chooses Standard (prewash > tunnel > dry)
 [09:05] car #21 leaves prewash post 1
 [09:05] car #24 enters prewash post 1
 [09:05] prewash post 1 starts on car #24 Premium (4 min)
 [09:05] car #21 moves prewash -> tunnel
 [09:05] car #21 waits in tunnel queue (1/1)
+[09:05] car #37 arrives at the entrance
+[09:05] car #37 chooses Standard (prewash > tunnel > dry)
 [09:05] car #37 waits in prewash queue (3/3)
 [09:07] car #38 arrives at the entrance
 [09:07] car #38 chooses Premium (prewash > tunnel > wax > dry)
@@ -278,14 +278,14 @@ Mode: threads in parallel
 [09:14] tunnel post 1 starts on car #21 Premium (8 min)
 [09:14] car #13 moves tunnel -> dry
 [09:14] car #13 waits in dry queue (1/1)
+[09:14] car #41 arrives at the entrance
+[09:14] car #41 chooses Express (tunnel > dry)
+[09:14] car #41 turned away: tunnel queue is full (1/1)
 [09:14] car #24 leaves prewash post 1
 [09:14] car #30 enters prewash post 1
 [09:14] prewash post 1 starts on car #30 Premium (5 min)
 [09:14] car #24 moves prewash -> tunnel
 [09:14] car #24 waits in tunnel queue (1/1)
-[09:14] car #41 arrives at the entrance
-[09:14] car #41 chooses Express (tunnel > dry)
-[09:14] car #41 turned away: tunnel queue is full (1/1)
 [09:15] dry post 1 finished car #10
 [09:15] car #10 leaves dry post 1
 [09:15] car #13 enters dry post 1
@@ -311,10 +311,10 @@ Mode: threads in parallel
 [09:22] tunnel post 1 starts on car #24 Premium (6 min)
 [09:22] car #21 moves tunnel -> wax
 [09:22] car #21 enters wax post 1
+[09:22] wax post 1 starts on car #21 Premium (6 min)
 [09:22] car #45 arrives at the entrance
 [09:22] car #45 chooses Express (tunnel > dry)
 [09:22] car #45 turned away: tunnel queue is full (1/1)
-[09:22] wax post 1 starts on car #21 Premium (6 min)
 [09:22] car #30 leaves prewash post 1
 [09:22] car #33 enters prewash post 1
 [09:22] prewash post 1 starts on car #33 Premium (4 min)
@@ -378,8 +378,8 @@ Mode: threads in parallel
 [09:36] car #54 arrives at the entrance
 [09:36] car #54 chooses Standard (prewash > tunnel > dry)
 [09:36] car #54 turned away: prewash queue is full (3/3)
-[09:37] prewash post 1 is repaired and back in service
 [09:37] tunnel post 1 finished car #30
+[09:37] prewash post 1 is repaired and back in service
 [09:37] car #30 leaves tunnel post 1
 [09:37] car #33 enters tunnel post 1
 [09:37] tunnel post 1 starts on car #33 Premium (6 min)

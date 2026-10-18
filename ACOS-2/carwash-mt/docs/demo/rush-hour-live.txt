@@ -25,10 +25,10 @@ Mode: threads in parallel
  washed 8[2m · [0minside 8[2m · [0mturned away 33[2m · [0mbreakdowns 3   [32m✓[0m[2m 337 checks ok[0m[K
 [K
 [1m THREADS[0m  coordinator 1 (sleeping)[2m · [0mposts 4 (4 sleeping)[2m · [0mcars 8 (4 washing, 4 in queue)[2m · [0mparks 49[K
-   car #33 waits in tunnel queue -> a post[2m   [tid 13337642][0m[K
-   car #46 waits in prewash queue -> a post[2m   [tid 13337655][0m[K
-   car #47 waits in prewash queue -> a post[2m   [tid 13337656][0m[K
-   car #49 waits in prewash queue -> a post[2m   [tid 13337658][0m[K
+   car #33 waits in tunnel queue -> a post[2m   [tid 15014301][0m[K
+   car #46 waits in prewash queue -> a post[2m   [tid 15014314][0m[K
+   car #47 waits in prewash queue -> a post[2m   [tid 15014315][0m[K
+   car #49 waits in prewash queue -> a post[2m   [tid 15014317][0m[K
 [K
 [2m 09:28 [0m[0mprewash post 1 starts on car #37 Standard (4 min)[0m[K
 [2m 09:28 [0m[0mcar #33 moves prewash -> tunnel[0m[K
