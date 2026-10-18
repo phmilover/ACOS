@@ -4,15 +4,18 @@
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
 #include "auditor.h"
 #include "config.h"
 #include "events.h"
+#include "gantt.h"
 #include "line.h"
 #include "memory.h"
 #include "mutex.h"
+#include "quiesce.h"
 #include "render.h"
 #include "rng.h"
 #include "sem.h"
@@ -1347,24 +1350,27 @@ static void TestSabotageOverflow(void) {
     LineFree(l);
 }
 
-/// Ожидающий стоит на посту prewash; место в тоннеле ему выдают под мьютексом тоннеля.
+/// Машина помылась на prewash и переезжает в тоннель через StageMove (как поток машины).
 static void RunDeadlockScenario(Sabotage sab, long *violations) {
     Config *cfg = LoadLineCfg(ZERO_CFG);
     cfg->sabotage = sab;
     Line *l = OpenLine();
-    Car *p = NewCar(l, P_STANDARD), *t1 = NewCar(l, P_EXPRESS), *t2 = NewCar(l, P_EXPRESS);
+    Car *p = NewCar(l, P_STANDARD);
     CHECK(Enter(l, S_PREWASH, p, 0, 1) == ADMIT_SEAT);
-    Enter(l, S_TUNNEL, t1, 0, 1);
-    Enter(l, S_TUNNEL, t2, 0, 1);
-    CHECK(Enter(l, S_TUNNEL, p, 1, 0) == ADMIT_FULL);
+    CHECK(Enter(l, S_TUNNEL, p, 0, 0) == ADMIT_SEAT);  // бронь в тоннеле
+    MutexLock(&l->stage[S_PREWASH].m);
+    l->stage[S_PREWASH].post[p->post].seat[p->seat].left = 0;  // операция кончилась
+    MutexUnlock(&l->stage[S_PREWASH].m);
     long before = LockdepViolations();
-    Vacate(l, S_TUNNEL, t1);
-    CHECK(p->res == RES_SEAT);
+    StageMove(l, &l->stage[S_PREWASH], &l->stage[S_TUNNEL], p);
     *violations = LockdepViolations() - before;
+    CHECK(p->place == CAR_POST && p->stage == S_TUNNEL);  // переезд состоялся в обоих случаях
+    CHECK(FindEv(EV_LEAVE, p->id) >= 0 && FindEv(EV_MOVE, p->id) > FindEv(EV_LEAVE, p->id));
     CHECK(LockdepHeldCount() == 0);
     LineFree(l);
 }
 
+/// SAB_DEADLOCK: первый же переезд берёт мьютекс следующей стадии, не отпустив текущую.
 static void TestSabotageDeadlock(void) {
     LockdepSetFatal(0);
     long clean = -1, caught = -1;
@@ -1373,6 +1379,21 @@ static void TestSabotageDeadlock(void) {
     CHECK(clean == 0);
     CHECK(caught == 1);
     LockdepSetFatal(1);
+}
+
+/// SAB_OVERFLOW на стадии с двумя постами: последний пост не ищется (ошибка на единицу в
+/// границе цикла), машина встаёт в очередь, хотя второй пост свободен.
+static void TestSabotageOverflowIdlePost(void) {
+    for (int sab = 0; sab <= 1; ++sab) {
+        Config *cfg = LoadLineCfg(NULL);
+        cfg->sabotage = sab ? SAB_OVERFLOW : SAB_NONE;
+        Line *l = OpenLine();
+        Car *a = NewCar(l, P_EXPRESS), *b = NewCar(l, P_EXPRESS);
+        CHECK(Enter(l, S_TUNNEL, a, 0, 1) == ADMIT_SEAT);
+        CHECK(Enter(l, S_TUNNEL, b, 0, 1) == (sab ? ADMIT_QUEUE : ADMIT_SEAT));
+        CHECK(Queued(l, S_TUNNEL) == sab);
+        LineFree(l);
+    }
 }
 
 /// Запросы момента покоя на dead-stage: машина в очереди wax, у которой нет постов.
@@ -1767,6 +1788,125 @@ static void TestAuditorQueue(void) {
     AuditorFree();
 }
 
+/// Код выхода: нарушение (аудитор, LOCKDEP или SOFT_ASSERT) важнее исхода модели.
+static void TestExitCode(void) {
+    CHECK(LineExitCode(LINE_FINISHED, 0, 0, 0) == 0);
+    CHECK(LineExitCode(LINE_STALLED, 0, 0, 0) == 2);
+    CHECK(LineExitCode(LINE_INTERRUPTED, 0, 0, 0) == 3);
+    CHECK(LineExitCode(LINE_NO_RESOURCES, 0, 0, 0) == 5);
+    CHECK(LineExitCode(LINE_FINISHED, 1, 0, 0) == 4);
+    CHECK(LineExitCode(LINE_FINISHED, 0, 1, 0) == 4);
+    CHECK(LineExitCode(LINE_FINISHED, 0, 0, 1) == 4);  // одного SOFT_ASSERT достаточно
+    CHECK(LineExitCode(LINE_STALLED, 0, 0, 2) == 4);
+}
+
+/// Крючок выхода для TestFatalExit: метка в stdout (дочернего процесса).
+static void MarkHook(void) {
+    if (write(1, "hook\n", 5) < 0) {
+        _exit(6);  // метку не записать - тест увидит другой код выхода
+    }
+}
+
+/// FatalExit: сначала крючок выхода (вернуть терминал), затем _exit с кодом.
+static void TestFatalExit(void) {
+    int fds[2];
+    CHECK(pipe(fds) == 0);
+    fflush(NULL);  // буфер stdout родителя не должен попасть в pipe из дочернего процесса
+    pid_t pid = fork();
+    if (pid == 0) {
+        dup2(fds[1], 1);
+        LockdepSetExitHook(MarkHook);
+        FatalExit(5);
+    }
+    close(fds[1]);
+    int status = 0;
+    waitpid(pid, &status, 0);
+    char buf[16] = "";
+    ssize_t n = read(fds[0], buf, sizeof buf - 1);
+    close(fds[0]);
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 5);
+    CHECK(n >= 5 && strncmp(buf, "hook\n", 5) == 0);  // крючок отработал до выхода
+}
+
+/// Покой без спящих, а крючок сказал бы «продолжать»: разбудить некому - это тупик, а не вечное
+/// ожидание. События крючка подписаны потоком часов ("clock").
+static void TestQuiesceNobodyToWake(void) {
+    LoadLineCfg(NULL);
+    Line *l = OpenLine();
+    EventsSubscribe(SourceListener);
+    Car *a = NewCar(l, P_EXPRESS);
+    CHECK(Enter(l, S_TUNNEL, a, 0, 1) == ADMIT_SEAT);  // операция идёт: движение возможно
+    MutexLock(&l->counters);
+    l->open = 0;
+    l->inside = 1;
+    MutexUnlock(&l->counters);
+    CHECK(QuiesceHook(5, 6, l) == 1);  // есть кому проснуться - продолжаем
+    long before = SoftAssertFailures();
+    srcSeen[0] = '\0';
+    CHECK(QuiesceHook(5, -1, l) == 0);
+    CHECK(l->status == LINE_STALLED);
+    CHECK(SoftAssertFailures() == before + 1);
+    CHECK(FindEv(EV_STALL, -1) >= 0);
+    CHECK(strcmp(srcSeen, "clock") == 0);
+    EventsSetSource(NULL);
+    GanttFree();
+    LineFree(l);
+}
+
+static atomic_int twoSubmitted = 0;
+
+static void *SubmitTwo(void *unused) {
+    (void)unused;
+    Snapshot s;
+    memset(&s, 0, sizeof s);
+    RenderSubmit(&s);
+    RenderSubmit(&s);
+    atomic_store(&twoSubmitted, 1);
+    return NULL;
+}
+
+static void *DrainPipe(void *arg) {
+    int fd = *(int *)arg;
+    char buf[4096];
+    while (read(fd, buf, sizeof buf) > 0) {
+    }
+    return NULL;
+}
+
+/// Два буфера по-настоящему: пока первый кадр рисуется (вывод застрял), второй уже кладётся.
+static void TestRenderDoubleBuffer(void) {
+    Config c;
+    LoadNormal(&c);
+    int fds[2];
+    CHECK(pipe(fds) == 0);
+    ViewLiveInit(fds[1], &c);  // пишет очистку экрана - до того, как pipe забит
+    // забиваем pipe, чтобы отрисовка первого кадра встала на write
+    int flags = fcntl(fds[1], F_GETFL);
+    fcntl(fds[1], F_SETFL, flags | O_NONBLOCK);
+    char junk[4096];
+    memset(junk, 'x', sizeof junk);
+    while (write(fds[1], junk, sizeof junk) > 0) {
+    }
+    fcntl(fds[1], F_SETFL, flags);
+    CHECK(RenderStart() == 0);
+    atomic_store(&twoSubmitted, 0);
+    pthread_t sub, drain;
+    CHECK(pthread_create(&sub, NULL, SubmitTwo, NULL) == 0);
+    int ok = 0;
+    for (int i = 0; i < 500 && !(ok = atomic_load(&twoSubmitted)); ++i) {
+        struct timespec ts = {.tv_sec = 0, .tv_nsec = 1000000L};
+        nanosleep(&ts, NULL);
+    }
+    CHECK(ok);  // второй Submit не ждал, пока нарисуют первый
+    CHECK(pthread_create(&drain, NULL, DrainPipe, &fds[0]) == 0);
+    pthread_join(sub, NULL);
+    RenderFlush();  // ждёт оба кадра
+    RenderStop();
+    close(fds[1]);
+    pthread_join(drain, NULL);
+    close(fds[0]);
+}
+
 int main(void) {
     RUN(TestStageCapacity);
     RUN(TestBadCapacity);
@@ -1804,6 +1944,7 @@ int main(void) {
     RUN(TestZeroQueue);
     RUN(TestSabotageOverflow);
     RUN(TestSabotageDeadlock);
+    RUN(TestSabotageOverflowIdlePost);
     RUN(TestGrantWakesParkedCar);
     RUN(TestStallQueries);
     RUN(TestWaitGraphText);
@@ -1820,5 +1961,9 @@ int main(void) {
     RUN(TestAuditorRoute);
     RUN(TestAuditorBrokenPost);
     RUN(TestAuditorQueue);
+    RUN(TestExitCode);
+    RUN(TestFatalExit);
+    RUN(TestQuiesceNobodyToWake);
+    RUN(TestRenderDoubleBuffer);
     return UnitSummary();
 }

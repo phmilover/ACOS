@@ -19,6 +19,7 @@
 #include "line.h"
 #include "render.h"
 #include "snapshot.h"
+#include "soft_assert.h"
 #include "waitgraph.h"
 
 /// Снимает бит запроса. @return 1, если он стоял
@@ -62,8 +63,8 @@ static int Finish(Line *l, LineStatus status) {
 }
 
 int QuiesceHook(int now, int nextWake, void *line) {
-    (void)nextWake;
     Line *l = line;
+    EventsSetClockSource();  // крючок зовут часы: STALL, INTERRUPT, CLOSE - от них
     // после SimKick крючок зовётся ещё раз в ту же минуту: колонка Ганта и кадр - один на минуту
     if (now != l->sampledAt) {
         Snapshot snap;
@@ -107,6 +108,12 @@ int QuiesceHook(int now, int nextWake, void *line) {
             }
         }
         return 0;
+    }
+    // продолжать, когда никто не спит, - ждать вечно: разбудить поток модели извне некому (поток
+    // сигналов только будит часы). Так быть не должно: в модели всегда спят посты
+    if (!SOFT_ASSERT(nextWake != -1, "quiescent with nobody to wake up")) {
+        EV(EV_STALL, -1, -1, -1, -1, inside);
+        return Finish(l, LINE_STALLED);
     }
     return 1;
 }

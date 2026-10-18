@@ -43,11 +43,15 @@ typedef struct {
     int arg, arg2;  ///< смысл зависит от типа, см. EventType
     /// Кто отправил, проставляет EventsEmit по EventsSetSource. TH_CAR: srcId = номер машины;
     /// TH_POST: srcId = стадия * MAX_POSTS + пост (пост с нуля); TH_COORD: srcId 0 -
-    /// координатор. srcId = -1 (с любым srcKind) - «система»: главный поток, часы, тесты,
-    /// то есть любой поток, не звавший EventsSetSource.
+    /// координатор. srcId = EVENT_SRC_CLOCK - поток часов (крючок момента покоя).
+    /// srcId = -1 (с любым srcKind) - «система»: главный поток, тесты, то есть любой поток, не
+    /// звавший EventsSetSource.
     ThreadKind srcKind;
     int srcId;
 } Event;
+
+/// Event.srcId потока часов (EventsSetClockSource).
+#define EVENT_SRC_CLOCK (-2)
 
 /// Подписчик получает событие под мьютексом шины.
 typedef void (*Listener)(const Event *e);
@@ -61,6 +65,10 @@ void EventsSubscribe(Listener l);
 
 /// Запоминает для текущего потока источник следующих EventsEmit. NULL - вернуть «систему».
 void EventsSetSource(const SimThread *self);
+
+/// Источник следующих EventsEmit текущего потока - часы ("clock" в колонке -t). Зовёт крючок
+/// момента покоя: он работает в потоке часов.
+void EventsSetClockSource(void);
 
 /// Проставляет seq, time = SimNow() и источник, рассылает подписчикам под мьютексом шины.
 /// Звать надо под мьютексом той стадии, которая изменилась: тогда порядок событий совпадает с
@@ -79,7 +87,7 @@ void EventsEmit(Event e);
 /// Текст события для ленты; живое состояние линии не читает. @return длина или 0
 int EventDescribe(const Event *e, char *buf, int size);
 
-/// Кто отправил: "car #7", "post tunnel.2" (пост с единицы), "coordinator", "main".
+/// Кто отправил: "car #7", "post tunnel.2" (пост с единицы), "coordinator", "clock", "main".
 int EventSource(const Event *e, char *buf, int size);
 
 /// ANSI-цвет строки события: поломки красные, ожидание жёлтое и т.д.

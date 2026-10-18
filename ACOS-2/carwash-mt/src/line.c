@@ -247,6 +247,18 @@ static int StageStallCause(Line *l, Stage *st) REQUIRES(st->m) {
     return -1;
 }
 
+int LineExitCode(LineStatus status, long audit, long lockdep, long soft) {
+    if (audit > 0 || lockdep > 0 || soft > 0) {
+        return 4;
+    }
+    switch (status) {
+    case LINE_FINISHED: return 0;
+    case LINE_STALLED: return 2;
+    case LINE_NO_RESOURCES: return 5;
+    default: return 3;
+    }
+}
+
 int LineStallCause(Line *l) {
     for (int s = 0; s < l->cfg->stages; ++s) {
         Stage *st = &l->stage[s];

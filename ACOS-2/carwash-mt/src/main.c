@@ -9,11 +9,13 @@
  * В режиме live схему рисует отдельный поток отрисовки (render.h), лента идёт только в журнал.
  *
  * Коды выхода: 0 - всё вымыто, 1 - плохие параметры, 2 - тупик, 3 - прервали сигналом,
- * 4 - нарушение инварианта, 5 - не хватило ресурсов (память, поток, семафор).
+ * 4 - сработала проверка (аудитор, LOCKDEP, SOFT_ASSERT), 5 - не хватило ресурсов (память,
+ * поток, семафор).
  */
 
 #include <fcntl.h>
 #include <pthread.h>
+#include <signal.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
@@ -41,7 +43,7 @@ static void Usage(const char *prog) {
             "Usage: %s [options]\n"
             "  -c FILE   configuration file (default: built-in typical car wash)\n"
             "  -s SEED   random seed\n"
-            "  -d MS     display delay per model minute, ms\n"
+            "  -d MS     display delay per model minute, ms (default: 150 live, 0 log)\n"
             "  -m MODE   view: live (animated line) or log (event feed)\n"
             "  -l FILE   journal file (default: carwash.log)\n"
             "  -u        unlimited mode: no day end and no car limit, stop with Ctrl+C\n"
@@ -55,8 +57,10 @@ static void Usage(const char *prog) {
             "  -h        this help\n"
             "Signals: SIGINT/SIGTERM interrupt (results and journal are saved), SIGUSR1 prints\n"
             "         the wait-for graph and threads to stderr, SIGUSR2 closes the entrance early\n"
-            "Exit codes: 0 done, 1 bad parameters, 2 stall, 3 interrupted, 4 invariant violated,\n"
-            "            5 out of resources (memory, thread or semaphore)\n",
+            "Exit codes: 0 done, 1 bad parameters, 2 stall, 3 interrupted, 4 a check failed\n"
+            "            (auditor invariant, LOCKDEP or SOFT_ASSERT), 5 out of resources (memory,\n"
+            "            thread or semaphore). LOCKDEP and out of memory exit at once, without\n"
+            "            the results\n",
             prog);
 }
 
@@ -150,17 +154,23 @@ static void PrintResults(int fd, Line *l, int color) {
     AuditorPrint(fd);
 }
 
-/// Нарушение инварианта (аудитор или LOCKDEP в нефатальном режиме) важнее исхода модели.
+/// Нарушение (аудитор, LOCKDEP в нефатальном режиме, SOFT_ASSERT) важнее исхода модели.
 static int ExitCode(const Line *l) {
-    if (AuditorViolations() > 0 || LockdepViolations() > 0) {
-        return 4;
-    }
-    switch (l->status) {
-    case LINE_FINISHED: return 0;
-    case LINE_STALLED: return 2;
-    case LINE_NO_RESOURCES: return 5;
-    default: return 3;
-    }
+    return LineExitCode(l->status, AuditorViolations(), LockdepViolations(), SoftAssertFailures());
+}
+
+/// Собрана ли программа с ThreadSanitizer (сборка -tsan).
+static int UnderTsan(void) {
+#if defined(__has_feature)
+#if __has_feature(thread_sanitizer)
+    return 1;
+#endif
+#endif
+#ifdef __SANITIZE_THREAD__
+    return 1;
+#else
+    return 0;
+#endif
 }
 
 /// Потоки постов и координатора: SimSpawned, затем pthread_create.
@@ -239,8 +249,13 @@ int main(int argc, char **argv) {
     if (rc != 0) {
         return rc < 0 ? 0 : 1;
     }
-    // до любого другого потока: маску наследуют все, сигналы достанутся только потоку sigwait
-    SignalsBlock();
+    // `carwash-mt -m log | head`: закрытый канал не убивает процесс, write вернёт EPIPE, а
+    // итоги и журнал всё равно сохранятся
+    struct sigaction ignore;
+    memset(&ignore, 0, sizeof ignore);
+    ignore.sa_handler = SIG_IGN;
+    sigemptyset(&ignore.sa_mask);
+    sigaction(SIGPIPE, &ignore, NULL);
 
     static Config cfg;
     char err[256];
@@ -260,6 +275,13 @@ int main(int argc, char **argv) {
     if (!cfg.seedSet) {
         cfg.seed = (unsigned)time(NULL) ^ (unsigned)getpid();
     }
+    if (cfg.sabotage == SAB_RACE && !UnderTsan()) {
+        dprintf(2, "carwash-mt: race sabotage is only visible in the -tsan build "
+                   "(ThreadSanitizer)\n");
+    }
+    // после вопросов -i (Ctrl+C на них прерывает программу как обычно) и до любого другого
+    // потока: маску наследуют все, сигналы достанутся только потоку sigwait
+    SignalsBlock();
 
     int tty = isatty(1);
     ViewMode view = cfg.view == VIEW_AUTO ? (tty ? VIEW_LIVE : VIEW_LOG) : cfg.view;

@@ -173,8 +173,6 @@ if(NOT CW_NESTED)
 
     # Сборка Debug, не RelWithDebInfo: тот определяет NDEBUG и отключает SOFT_ASSERT, а тесты
     # проверяют его срабатывания.
-    # Сборка Debug, не RelWithDebInfo: тот определяет NDEBUG и отключает SOFT_ASSERT, а тесты
-    # проверяют его срабатывания.
     # cmake --build build --target tsan: сборка build-tsan и прогон тестов под ThreadSanitizer.
     # halt_on_error=1 - первая же гонка валит прогон; тест саботажа race ждёт отчёта TSan
     # (он запускается с этой же настройкой: отчёт напечатан до остановки)

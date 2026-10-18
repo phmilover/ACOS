@@ -162,6 +162,17 @@ int LineEntranceMayAccept(Line *l);
 /// Только в момент покоя: стадия без постов, в которую упёрлись машины, или -1.
 int LineStallCause(Line *l);
 
+/**
+ * @brief Код выхода программы по исходу модели и счётчикам проверок.
+ *
+ * Нарушение важнее исхода: хоть одно нарушение инварианта (аудитор), порядка блокировок
+ * (LOCKDEP в нефатальном режиме) или сработавший SOFT_ASSERT - код 4. Иначе по исходу: 0 -
+ * всё вымыто, 2 - тупик, 3 - прервали, 5 - не хватило ресурсов.
+ * @param audit нарушений аудитора @param lockdep нарушений LOCKDEP @param soft срабатываний
+ * SOFT_ASSERT
+ */
+int LineExitCode(LineStatus status, long audit, long lockdep, long soft);
+
 /// Следующая стадия маршрута машины или -1, если эта последняя.
 int CarNextStage(const Car *car, const Config *cfg);
 

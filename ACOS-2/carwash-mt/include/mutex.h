@@ -21,7 +21,6 @@ enum {
     RANK_LINE = 20,
     RANK_REGISTRY = 30,
     RANK_SIM = 40,
-    RANK_RENDER = 45,
     RANK_BUS = 50,
     RANK_OUT = 60
 };
@@ -59,7 +58,11 @@ long LockdepViolations(void);
 /// продолжение
 void LockdepSetFatal(int fatal);
 
-/// Что сделать перед аварийным _exit(4) при нарушении (например, вернуть курсор терминала).
+/// Аварийный выход из любого потока: крючок LockdepSetExitHook (если задан), затем _exit(@p code).
+/// Итоги и журнал при этом не печатаются. Так выходят фатальный LOCKDEP (4) и CheckedRealloc (5).
+_Noreturn void FatalExit(int code);
+
+/// Что сделать перед аварийным выходом FatalExit (например, вернуть курсор терминала).
 /// NULL - ничего. Функция зовётся в потоке-нарушителе и не должна брать мьютексы.
 void LockdepSetExitHook(void (*hook)(void));
 

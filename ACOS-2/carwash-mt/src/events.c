@@ -17,7 +17,7 @@ static long nextSeq GUARDED_BY(busMu) = 0;
 static const Config *config;  // пишется в EventsInit до создания потоков, дальше только читается
 
 static _Thread_local ThreadKind srcKind = TH_COORD;
-static _Thread_local int srcId = -1;  // -1 - «система»
+static _Thread_local int srcId = -1;  // -1 - «система», EVENT_SRC_CLOCK - часы
 
 void EventsInit(const Config *cfg) {
     if (!busReady) {
@@ -42,6 +42,11 @@ void EventsSubscribe(Listener l) {
 void EventsSetSource(const SimThread *self) {
     srcKind = self ? self->kind : TH_COORD;
     srcId = self ? self->id : -1;
+}
+
+void EventsSetClockSource(void) {
+    srcKind = TH_COORD;
+    srcId = EVENT_SRC_CLOCK;
 }
 
 void EventsEmit(Event e) {
@@ -82,6 +87,9 @@ int EventClock(int minute, char *buf, int size) {
 }
 
 int EventSource(const Event *e, char *buf, int size) {
+    if (e->srcId == EVENT_SRC_CLOCK) {
+        return snprintf(buf, size, "clock");
+    }
     if (e->srcId < 0) {
         return snprintf(buf, size, "main");
     }

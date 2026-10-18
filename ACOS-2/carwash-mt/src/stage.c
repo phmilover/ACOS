@@ -28,10 +28,18 @@ static int QueueEmpty(Stage *st) REQUIRES(st->m) {
     return st->queued == 0 && st->queueReserved == 0;
 }
 
+/// Сколько постов стадии ищет FreeSeat. С SAB_OVERFLOW - специально на один меньше (ошибка на
+/// единицу в границе цикла; один пост ищется всегда): очередь перед стадией с двумя постами
+/// заполняется на любом seed, и лишнее место из QueueLimit наверняка занимают.
+static int SearchedPosts(const Line *l, int s) {
+    int posts = l->cfg->stage[s].posts;
+    return l->cfg->sabotage == SAB_OVERFLOW && posts > 1 ? posts - 1 : posts;
+}
+
 /// Первое свободное место на исправном посту. @return 1 и пост/место в *p, *k, иначе 0
 static int FreeSeat(const Line *l, Stage *st, int *p, int *k) REQUIRES(st->m) {
     const StageSpec *spec = &l->cfg->stage[st->index];
-    for (int i = 0; i < spec->posts; ++i) {
+    for (int i = 0; i < SearchedPosts(l, st->index); ++i) {
         if (st->post[i].repair > 0) {
             continue;  // неисправный пост новых машин не берёт (I4)
         }
@@ -178,6 +186,24 @@ void StageCommit(Line *l, Stage *st, Car *car, int fromStage) {
     StageDispatch(l, st);
 }
 
+void StageMove(Line *l, Stage *from, Stage *to, Car *car) {
+    MutexLock(&from->m);
+    StageVacate(l, from, car);
+    if (l->cfg->sabotage == SAB_DEADLOCK) {
+        // намеренная ошибка: «переехать под одним замком» - мьютекс следующей стадии берётся,
+        // пока текущая ещё захвачена. LOCKDEP ловит это до блокировки
+        MutexLock(&to->m);
+        StageCommit(l, to, car, from->index);
+        MutexUnlock(&to->m);
+        MutexUnlock(&from->m);
+        return;
+    }
+    MutexUnlock(&from->m);
+    MutexLock(&to->m);
+    StageCommit(l, to, car, from->index);
+    MutexUnlock(&to->m);
+}
+
 void StageVacate(Line *l, Stage *st, Car *car) {
     const StageSpec *spec = &l->cfg->stage[st->index];
     // ищем место по постам стадии, а не по полям машины: StageCommit на следующей стадии мог
@@ -276,14 +302,6 @@ static void GrantWaiters(Line *l, Stage *st) REQUIRES(st->m) {
         }
         st->waiting[i] = st->waiting[--st->waiters];  // порядок в массиве не важен: решает ticket
         car->ticket = -1;
-        if (l->cfg->sabotage == SAB_DEADLOCK && car->place == CAR_POST && car->stage >= 0 &&
-            car->stage != st->index) {
-            // намеренная ошибка: «заглянуть» на стадию, где стоит машина, не отпустив свою -
-            // два мьютекса стадий сразу; LOCKDEP ловит это до блокировки
-            Stage *other = &l->stage[car->stage];
-            MutexLock(&other->m);
-            MutexUnlock(&other->m);
-        }
         SimWake(&car->th);
     }
 }

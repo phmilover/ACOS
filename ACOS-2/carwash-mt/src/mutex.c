@@ -34,6 +34,14 @@ void LockdepSetFatal(int fatal) {
     atomic_store(&fatalMode, fatal);
 }
 
+_Noreturn void FatalExit(int code) {
+    void (*hook)(void) = atomic_load(&exitHook);
+    if (hook) {
+        hook();
+    }
+    _exit(code);
+}
+
 /// Сообщает о нарушении: одним write в fd 2 (строки разных потоков не перемешаются).
 static void Report(const Mutex *m, const Mutex *h) {
     atomic_fetch_add(&violations, 1);
@@ -48,11 +56,7 @@ static void Report(const Mutex *m, const Mutex *h) {
         // писать некуда, дальше падать нечем
     }
     if (atomic_load(&fatalMode)) {
-        void (*hook)(void) = atomic_load(&exitHook);
-        if (hook) {
-            hook();
-        }
-        _exit(4);
+        FatalExit(4);
     }
 }
 

@@ -137,13 +137,14 @@ echo "demo: sigusr1"
 } >"$OUT/sigusr2.txt"
 echo "demo: sigusr2"
 
-# 8-9. Саботаж: переполнение очереди (аудитор и SOFT_ASSERT) и взаимная блокировка (LOCKDEP)
-run sabotage-overflow bin/carwash-mt -m log -x overflow -c data/rush-hour.cfg -s 3 -d 0
+# 8-9. Саботаж на встроенной конфигурации: переполнение очереди (аудитор и SOFT_ASSERT) и
+# вложенные мьютексы стадий (LOCKDEP ловит до взаимной блокировки)
+run sabotage-overflow bin/carwash-mt -m log -x overflow -s 3 -d 0
 run sabotage-deadlock env TSAN_OPTIONS=report_thread_leaks=0 bin/carwash-mt -m log -x deadlock \
-    -c data/rush-hour.cfg -s 1 -d 0
+    -s 1 -d 0
 
 # 10. Саботаж: гонка данных, её видит только ThreadSanitizer (сборка -tsan, первый отчёт)
 run sabotage-race env TSAN_OPTIONS=halt_on_error=1:abort_on_error=0 bin/carwash-mt-tsan -m log \
-    -x race -c data/rush-hour.cfg -s 1 -d 0
+    -x race -s 1 -d 0
 
 echo "demo: files are in $OUT"

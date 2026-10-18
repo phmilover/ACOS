@@ -4,8 +4,8 @@
  *
  * Машина сама переезжает со стадии на стадию по «эстафете» (stage.h): бронирует место на
  * следующей стадии, держа текущее, и только потом освобождает текущее и занимает
- * забронированное. Мьютексы стадий не вкладываются: StageVacate под мьютексом текущей,
- * затем StageCommit под мьютексом следующей (события LEAVE, MOVE, ENTER/QUEUE как в ИЗ1).
+ * забронированное (StageMove). Мьютексы стадий не вкладываются: StageVacate под мьютексом
+ * текущей, затем StageCommit под мьютексом следующей (события LEAVE, MOVE, ENTER/QUEUE как в ИЗ1).
  *
  * На какой стадии машина, знает только её поток (переменная cur): поля car->stage и
  * car->place за машину может переписать другой поток (StageDispatch сажает её из очереди на
@@ -187,14 +187,8 @@ static void Ride(Line *l, Car *car, int cur) {
         if (Reserve(l, car, cur, post, next) == SIM_STOP) {
             return;
         }
-        // мьютексы стадий не вкладываются: бронь уже есть, место за машиной никто не займёт
-        Stage *st = &l->stage[cur], *ns = &l->stage[next];
-        MutexLock(&st->m);
-        StageVacate(l, st, car);
-        MutexUnlock(&st->m);
-        MutexLock(&ns->m);
-        StageCommit(l, ns, car, cur);
-        MutexUnlock(&ns->m);
+        // бронь уже есть, место за машиной никто не займёт: мьютексы стадий не вкладываются
+        StageMove(l, &l->stage[cur], &l->stage[next], car);
         cur = next;
     }
 }

@@ -17,7 +17,7 @@ FAILED=0
 step() {
     local name=$1
     shift
-    printf '%-10s ' "$name"
+    printf '%-11s ' "$name"
     local t0=$SECONDS
     if "$@" >"$LOGS/$name.log" 2>&1; then
         echo "PASS ($((SECONDS - t0)) s)"
@@ -30,7 +30,7 @@ step() {
 }
 
 skip() {
-    printf '%-10s SKIP (%s)\n' "$1" "$2"
+    printf '%-11s SKIP (%s)\n' "$1" "$2"
     record "$1" SKIP "$2"
 }
 
@@ -83,6 +83,8 @@ else
 fi
 
 step stress scripts/stress.sh bin/carwash-mt 200
+# сборка -tsan уже есть после шага tsan; без неё шаг честно падает
+step stress-tsan scripts/stress.sh bin/carwash-mt-tsan 100
 
 if have xcrun && ! xcrun -f llvm-cov >/dev/null 2>&1; then
     skip coverage "xcrun llvm-cov not available"
@@ -93,16 +95,17 @@ else
 fi
 
 if have doxygen; then
-    step docs bash -c 'cmake --build build --target docs 2>&1 | tee /dev/stderr | { ! grep -i "warning"; }'
+    # pipefail: упавший Doxygen - FAIL, даже если слова warning в выводе нет
+    step docs bash -c 'set -o pipefail; cmake --build build --target docs 2>&1 | tee /dev/stderr | { ! grep -i "warning"; }'
 else
     skip docs "doxygen not found: brew install doxygen"
 fi
 
 echo
 echo "================ SUMMARY ================"
-printf '%-10s %-6s %s\n' STEP RESULT NOTE
+printf '%-11s %-6s %s\n' STEP RESULT NOTE
 for i in "${!NAMES[@]}"; do
-    printf '%-10s %-6s %s\n' "${NAMES[$i]}" "${RESULTS[$i]}" "${NOTES[$i]}"
+    printf '%-11s %-6s %s\n' "${NAMES[$i]}" "${RESULTS[$i]}" "${NOTES[$i]}"
 done
 [ "$FAILED" -eq 0 ] && echo "ALL OK" || echo "THERE ARE FAILURES"
 exit "$FAILED"

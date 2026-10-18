@@ -8,7 +8,10 @@
 #include <stdlib.h>
 #include <unistd.h>
 
-/// Как realloc, но без памяти сразу выходит с кодом 5: продолжать всё равно нечем.
+#include "mutex.h"
+
+/// Как realloc, но без памяти сразу выходит с кодом 5 (FatalExit: в живой схеме терминал
+/// возвращается, итоги не печатаются): продолжать всё равно нечем.
 static inline void *CheckedRealloc(void *ptr, size_t size) {
     void *p = realloc(ptr, size);
     if (p == NULL) {
@@ -16,7 +19,7 @@ static inline void *CheckedRealloc(void *ptr, size_t size) {
         if (write(2, msg, sizeof(msg) - 1) < 0) {
             // печатать уже некуда
         }
-        _exit(5);
+        FatalExit(5);
     }
     return p;
 }
