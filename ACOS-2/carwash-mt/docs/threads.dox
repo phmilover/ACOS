@@ -1,0 +1,126 @@
+/**
+@page threads Потоки и синхронизация
+
+Модель многопоточная: у каждой сущности свой поток pthread. Все потоки модели (координатор,
+машины, посты) ходят по виртуальным часам (@ref sim.h): в каждый момент поток либо работает,
+либо припаркован. Стрелка часов двигается только в момент покоя, когда никто не работает и
+запускать некого. Поэтому результат не зависит от скорости компьютера, а режим `-D` даёт
+побайтно одинаковый журнал.
+
+@section threads_who Потоки и кто кого будит
+
+Сплошная стрелка - создание и сбор потока (pthread_create / pthread_join), пунктирная - пробуждение
+(SimWake или SimKick), точечная - передача данных.
+
+@dot
+digraph threads {
+  rankdir=LR;
+  node [fontname="Helvetica", fontsize=10, shape=box, style=rounded];
+  edge [fontname="Helvetica", fontsize=9];
+
+  main    [label="main\nключи, конфиг, итоги"];
+  clock   [label="clock\nSimClockMain"];
+  coord   [label="coordinator\nприбытия, закрытие въезда"];
+  post    [label="post (по потоку на пост)\nпоток PostMain"];
+  car     [label="car #N (по потоку на машину)\nCarMain"];
+  signals [label="signals\nsigwait"];
+  render  [label="render\nкадры живой схемы"];
+
+  main -> clock   [label="create/join"];
+  main -> coord   [label="create/join"];
+  main -> post    [label="create/join"];
+  main -> signals [label="create/join"];
+  main -> render  [label="create/join"];
+  coord -> car    [label="create (по прибытию)\njoin (уехавших)"];
+
+  clock -> car    [style=dashed, label="запуск в момент покоя"];
+  clock -> post   [style=dashed, label="каждую минуту"];
+  clock -> coord  [style=dashed, label="по времени прибытия"];
+  post -> car     [style=dashed, label="конец операции"];
+  car -> car      [style=dashed, label="эстафета: место\nосвободилось"];
+  car -> coord    [style=dashed, label="последняя машина дня"];
+  post -> car     [style=dashed, label="починился: раздача мест"];
+  signals -> clock [style=dashed, label="SimKick"];
+  clock -> render [style=dotted, label="RenderSubmit(снимок)"];
+}
+@enddot
+
+Что защищает общие данные:
+- стадия (очередь, посты, ожидающие) - свой мьютекс `RANK_STAGE`, мьютексы стадий не вкладываются;
+- счётчики линии - `counters` (`RANK_LINE`), реестр машин - `registry` (`RANK_REGISTRY`);
+- часы - свой мьютекс (`RANK_SIM`), шина событий - `RANK_BUS`, вывод - `RANK_OUT`.
+
+Порядок захвата проверяет LOCKDEP (@ref mutex.h): мьютекс можно брать только с рангом больше
+уже удерживаемых. Поле, которое охраняет мьютекс, помечено `GUARDED_BY`, и компилятор
+(Thread Safety Analysis) не даёт тронуть его без захвата.
+
+@section threads_baton Передача эстафеты
+
+Машина переезжает на следующую стадию так, чтобы место было гарантировано (@ref stage.h):
+сначала бронь на следующей стадии, затем без вложенных мьютексов освобождение текущего места и
+занятие забронированного. Тот, кто освободил место, сам решает под мьютексом стадии, кому оно
+достанется (StageDispatch), меняет состояние за выбранного и будит его. Приоритет поэтому
+соблюдается точно, а не «как разбудит ОС».
+
+@dot
+digraph baton {
+  rankdir=TB;
+  node [fontname="Helvetica", fontsize=10, shape=box, style=rounded];
+  edge [fontname="Helvetica", fontsize=9];
+
+  op   [label="Машина A закончила операцию\n(пост разбудил её)"];
+  adm  [label="StageAdmit на следующей стадии\n(мьютекс следующей стадии)"];
+  full [label="ADMIT_FULL: встала в список\nожидающих, SimPark(WAIT_ROOM)", shape=box];
+  res  [label="Бронь есть\n(место на посту или в очереди)"];
+  vac  [label="StageVacate на текущей стадии\n(мьютекс текущей): EV_LEAVE"];
+  dis1 [label="StageDispatch текущей стадии:\nместо - следующей машине\nиз очереди или ожидающему\nSimWake(B)", style="rounded,filled", fillcolor="#e8f0fe"];
+  com  [label="StageCommit на следующей стадии\n(мьютекс следующей): EV_MOVE, EV_ENTER\nили EV_QUEUE, EV_OP_START"];
+
+  op -> adm;
+  adm -> full [label="нет места"];
+  full -> adm [label="разбудил освободивший\nместо (бронь выдана)", style=dashed];
+  adm -> res  [label="есть"];
+  res -> vac;
+  vac -> dis1;
+  dis1 -> com [label="мьютексы не вложены"];
+}
+@enddot
+
+@section threads_clock Часы: цикл покоя
+
+Поток часов ждёт семафор, а проснувшись, проверяет, есть ли покой: работающих нет, очередь
+запуска пуста. Тогда он вызывает крючок (@ref quiesce.h) - состояние модели в этот момент устойчиво,
+и там берутся снимок для живой схемы, выборка для диаграммы Ганта, обрабатываются сигналы
+и ищется тупик. Затем стрелка переводится на ближайшую минуту, просыпаются все, кому пора, и
+цикл повторяется. Тот, кто будит поток (SimWake), увеличивает число работающих до sem_post, поэтому
+часы не проскакивают.
+
+@dot
+digraph clock {
+  rankdir=TB;
+  node [fontname="Helvetica", fontsize=10, shape=box, style=rounded];
+  edge [fontname="Helvetica", fontsize=9];
+
+  wait  [label="SemWait(clockSem)\nчасы спят"];
+  quiet [label="покой?\nrunning == 0 и очередь запуска пуста", shape=diamond, style=""];
+  hook  [label="крючок QuiesceHook (мьютекс часов не держим):\nснимок, Гант, сигналы, поиск тупика"];
+  go    [label="продолжать?", shape=diamond, style=""];
+  stop  [label="SimStop: разбудить всех,\nвсе Sim* возвращают SIM_STOP"];
+  adv   [label="now = ближайшее пробуждение;\nпросыпаются спящие; Dispatch"];
+  run   [label="потоки модели работают\nи паркуются (SimPark/SimSleep)", style="rounded,filled", fillcolor="#e8f0fe"];
+
+  wait -> quiet;
+  quiet -> wait [label="нет"];
+  quiet -> hook [label="да"];
+  hook -> go;
+  go -> stop [label="нет"];
+  go -> adv  [label="да"];
+  adv -> run;
+  run -> wait [label="последний паркуется:\nSemPost(clockSem)"];
+}
+@enddot
+
+Разбудили поток извне во время крючка (например, пришёл сигнал) - он встаёт в очередь запуска, а
+время не двигается: часы дождутся следующего покоя. SimKick просит часы вызвать крючок ещё раз
+в ту же минуту: так поток сигналов передаёт часам запрос, не трогая модель.
+*/

@@ -1,0 +1,561 @@
+$ bin/carwash-mt -m log -c data/rush-hour.cfg -s 7 -d 0
+=== AUTOMATIC CAR WASH: simulation of one working day ===
+Stages:
+  prewash   posts 1, operation 3-5 min, queue 3
+  tunnel    posts 1, operation 6-9 min, queue 1
+  wax       posts 1, operation 4-6 min, queue 1
+  dry       posts 1, operation 3-5 min, queue 1
+Programs:
+  Express   weight 30, priority 1, route: tunnel > dry
+  Standard  weight 40, priority 2, route: prewash > tunnel > dry
+  Premium   weight 30, priority 3, route: prewash > tunnel > wax > dry
+Cars: 60, arrival every 1-3 min, working day: 180 min
+Failures: p=0.010 per post per minute, repair 5-10 min
+Priority rule: fifo, seed: 7
+Mode: threads in parallel
+
+[08:00] car #1 arrives at the entrance
+[08:00] car #1 chooses Standard (prewash > tunnel > dry)
+[08:00] car #1 enters prewash post 1
+[08:00] prewash post 1 starts on car #1 Standard (3 min)
+[08:02] car #2 arrives at the entrance
+[08:02] car #2 chooses Standard (prewash > tunnel > dry)
+[08:02] car #2 waits in prewash queue (1/3)
+[08:03] prewash post 1 finished car #1
+[08:03] car #1 leaves prewash post 1
+[08:03] car #2 enters prewash post 1
+[08:03] prewash post 1 starts on car #2 Standard (3 min)
+[08:03] car #1 moves prewash -> tunnel
+[08:03] car #1 enters tunnel post 1
+[08:03] tunnel post 1 starts on car #1 Standard (9 min)
+[08:03] car #3 arrives at the entrance
+[08:03] car #3 chooses Standard (prewash > tunnel > dry)
+[08:03] car #3 waits in prewash queue (1/3)
+[08:05] car #4 arrives at the entrance
+[08:05] car #4 chooses Express (tunnel > dry)
+[08:05] car #4 waits in tunnel queue (1/1)
+[08:06] prewash post 1 finished car #2
+[08:06] car #2 waits on prewash post 1: tunnel is full
+[08:08] car #5 arrives at the entrance
+[08:08] car #5 chooses Standard (prewash > tunnel > dry)
+[08:08] car #5 waits in prewash queue (2/3)
+[08:09] car #6 arrives at the entrance
+[08:09] car #6 chooses Standard (prewash > tunnel > dry)
+[08:09] car #6 waits in prewash queue (3/3)
+[08:12] tunnel post 1 finished car #1
+[08:12] car #1 leaves tunnel post 1
+[08:12] car #4 enters tunnel post 1
+[08:12] tunnel post 1 starts on car #4 Express (9 min)
+[08:12] car #1 moves tunnel -> dry
+[08:12] car #1 enters dry post 1
+[08:12] dry post 1 starts on car #1 Standard (4 min)
+[08:12] car #7 arrives at the entrance
+[08:12] car #7 chooses Express (tunnel > dry)
+[08:12] car #7 turned away: tunnel queue is full (1/1)
+[08:12] car #2 leaves prewash post 1
+[08:12] car #3 enters prewash post 1
+[08:12] prewash post 1 starts on car #3 Standard (3 min)
+[08:12] car #2 moves prewash -> tunnel
+[08:12] car #2 waits in tunnel queue (1/1)
+[08:13] car #8 arrives at the entrance
+[08:13] car #8 chooses Express (tunnel > dry)
+[08:13] car #8 turned away: tunnel queue is full (1/1)
+[08:15] prewash post 1 finished car #3
+[08:15] car #3 waits on prewash post 1: tunnel is full
+[08:15] car #9 arrives at the entrance
+[08:15] car #9 chooses Express (tunnel > dry)
+[08:15] car #9 turned away: tunnel queue is full (1/1)
+[08:16] dry post 1 finished car #1
+[08:16] car #1 leaves dry post 1
+[08:16] car #1 is clean! Standard done in 16 min, drives away
+[08:17] car #10 arrives at the entrance
+[08:17] car #10 chooses Premium (prewash > tunnel > wax > dry)
+[08:17] car #10 waits in prewash queue (3/3)
+[08:18] car #11 arrives at the entrance
+[08:18] car #11 chooses Standard (prewash > tunnel > dry)
+[08:18] car #11 turned away: prewash queue is full (3/3)
+[08:20] car #12 arrives at the entrance
+[08:20] car #12 chooses Premium (prewash > tunnel > wax > dry)
+[08:20] car #12 turned away: prewash queue is full (3/3)
+[08:21] dry post 1 BREAKS DOWN (repair 9 min)
+[08:21] tunnel post 1 finished car #4
+[08:21] car #4 leaves tunnel post 1
+[08:21] car #2 enters tunnel post 1
+[08:21] tunnel post 1 starts on car #2 Standard (9 min)
+[08:21] car #4 moves tunnel -> dry
+[08:21] car #4 waits in dry queue (1/1)
+[08:21] car #13 arrives at the entrance
+[08:21] car #13 chooses Standard (prewash > tunnel > dry)
+[08:21] car #3 leaves prewash post 1
+[08:21] car #5 enters prewash post 1
+[08:21] prewash post 1 starts on car #5 Standard (5 min)
+[08:21] car #3 moves prewash -> tunnel
+[08:21] car #3 waits in tunnel queue (1/1)
+[08:21] car #13 waits in prewash queue (3/3)
+[08:23] car #14 arrives at the entrance
+[08:23] car #14 chooses Premium (prewash > tunnel > wax > dry)
+[08:23] car #14 turned away: prewash queue is full (3/3)
+[08:26] prewash post 1 finished car #5
+[08:26] car #5 waits on prewash post 1: tunnel is full
+[08:26] car #15 arrives at the entrance
+[08:26] car #15 chooses Standard (prewash > tunnel > dry)
+[08:26] car #15 turned away: prewash queue is full (3/3)
+[08:29] tunnel post 1 BREAKS DOWN with car #2 on it (repair 8 min)
+[08:29] car #16 arrives at the entrance
+[08:29] car #16 chooses Express (tunnel > dry)
+[08:29] car #16 turned away: tunnel queue is full (1/1)
+[08:30] dry post 1 is repaired and back in service
+[08:30] car #4 enters dry post 1
+[08:30] dry post 1 starts on car #4 Express (5 min)
+[08:30] car #17 arrives at the entrance
+[08:30] car #17 chooses Premium (prewash > tunnel > wax > dry)
+[08:30] car #17 turned away: prewash queue is full (3/3)
+[08:32] car #18 arrives at the entrance
+[08:32] car #18 chooses Express (tunnel > dry)
+[08:32] car #18 turned away: tunnel queue is full (1/1)
+[08:33] car #19 arrives at the entrance
+[08:33] car #19 chooses Standard (prewash > tunnel > dry)
+[08:33] car #19 turned away: prewash queue is full (3/3)
+[08:35] dry post 1 finished car #4
+[08:35] car #4 leaves dry post 1
+[08:35] car #4 is clean! Express done in 30 min, drives away
+[08:35] car #20 arrives at the entrance
+[08:35] car #20 chooses Express (tunnel > dry)
+[08:35] car #20 turned away: tunnel queue is full (1/1)
+[08:37] tunnel post 1 is repaired and back in service
+[08:38] tunnel post 1 finished car #2
+[08:38] car #2 leaves tunnel post 1
+[08:38] car #3 enters tunnel post 1
+[08:38] tunnel post 1 starts on car #3 Standard (6 min)
+[08:38] car #2 moves tunnel -> dry
+[08:38] car #21 arrives at the entrance
+[08:38] car #21 chooses Premium (prewash > tunnel > wax > dry)
+[08:38] car #2 enters dry post 1
+[08:38] dry post 1 starts on car #2 Standard (4 min)
+[08:38] car #5 leaves prewash post 1
+[08:38] car #6 enters prewash post 1
+[08:38] prewash post 1 starts on car #6 Standard (5 min)
+[08:38] car #5 moves prewash -> tunnel
+[08:38] car #5 waits in tunnel queue (1/1)
+[08:38] car #21 waits in prewash queue (3/3)
+[08:41] car #22 arrives at the entrance
+[08:41] car #22 chooses Standard (prewash > tunnel > dry)
+[08:41] car #22 turned away: prewash queue is full (3/3)
+[08:42] dry post 1 finished car #2
+[08:42] car #2 leaves dry post 1
+[08:42] car #2 is clean! Standard done in 40 min, drives away
+[08:42] car #23 arrives at the entrance
+[08:42] car #23 chooses Standard (prewash > tunnel > dry)
+[08:42] car #23 turned away: prewash queue is full (3/3)
+[08:43] wax post 1 BREAKS DOWN (repair 9 min)
+[08:43] prewash post 1 finished car #6
+[08:43] car #6 waits on prewash post 1: tunnel is full
+[08:44] tunnel post 1 finished car #3
+[08:44] car #3 leaves tunnel post 1
+[08:44] car #5 enters tunnel post 1
+[08:44] tunnel post 1 starts on car #5 Standard (9 min)
+[08:44] car #3 moves tunnel -> dry
+[08:44] car #3 enters dry post 1
+[08:44] dry post 1 starts on car #3 Standard (3 min)
+[08:44] car #6 leaves prewash post 1
+[08:44] car #10 enters prewash post 1
+[08:44] prewash post 1 starts on car #10 Premium (5 min)
+[08:44] car #6 moves prewash -> tunnel
+[08:44] car #6 waits in tunnel queue (1/1)
+[08:45] car #24 arrives at the entrance
+[08:45] car #24 chooses Premium (prewash > tunnel > wax > dry)
+[08:45] car #24 waits in prewash queue (3/3)
+[08:46] car #25 arrives at the entrance
+[08:46] car #25 chooses Premium (prewash > tunnel > wax > dry)
+[08:46] car #25 turned away: prewash queue is full (3/3)
+[08:47] dry post 1 finished car #3
+[08:47] car #3 leaves dry post 1
+[08:47] car #3 is clean! Standard done in 44 min, drives away
+[08:48] car #26 arrives at the entrance
+[08:48] car #26 chooses Express (tunnel > dry)
+[08:48] car #26 turned away: tunnel queue is full (1/1)
+[08:49] prewash post 1 finished car #10
+[08:49] car #10 waits on prewash post 1: tunnel is full
+[08:49] car #27 arrives at the entrance
+[08:49] car #27 chooses Standard (prewash > tunnel > dry)
+[08:49] car #27 turned away: prewash queue is full (3/3)
+[08:50] car #28 arrives at the entrance
+[08:50] car #28 chooses Premium (prewash > tunnel > wax > dry)
+[08:50] car #28 turned away: prewash queue is full (3/3)
+[08:52] wax post 1 is repaired and back in service
+[08:52] car #29 arrives at the entrance
+[08:52] car #29 chooses Standard (prewash > tunnel > dry)
+[08:52] car #29 turned away: prewash queue is full (3/3)
+[08:53] tunnel post 1 finished car #5
+[08:53] car #5 leaves tunnel post 1
+[08:53] car #6 enters tunnel post 1
+[08:53] tunnel post 1 starts on car #6 Standard (6 min)
+[08:53] car #5 moves tunnel -> dry
+[08:53] car #5 enters dry post 1
+[08:53] dry post 1 starts on car #5 Standard (4 min)
+[08:53] car #10 leaves prewash post 1
+[08:53] car #13 enters prewash post 1
+[08:53] prewash post 1 starts on car #13 Standard (5 min)
+[08:53] car #10 moves prewash -> tunnel
+[08:53] car #10 waits in tunnel queue (1/1)
+[08:54] car #30 arrives at the entrance
+[08:54] car #30 chooses Premium (prewash > tunnel > wax > dry)
+[08:54] car #30 waits in prewash queue (3/3)
+[08:56] car #31 arrives at the entrance
+[08:56] car #31 chooses Express (tunnel > dry)
+[08:56] car #31 turned away: tunnel queue is full (1/1)
+[08:57] dry post 1 finished car #5
+[08:57] car #5 leaves dry post 1
+[08:57] car #5 is clean! Standard done in 49 min, drives away
+[08:57] car #32 arrives at the entrance
+[08:57] car #32 chooses Standard (prewash > tunnel > dry)
+[08:57] car #32 turned away: prewash queue is full (3/3)
+[08:58] prewash post 1 finished car #13
+[08:58] car #13 waits on prewash post 1: tunnel is full
+[08:59] tunnel post 1 finished car #6
+[08:59] car #6 leaves tunnel post 1
+[08:59] car #10 enters tunnel post 1
+[08:59] tunnel post 1 starts on car #10 Premium (6 min)
+[08:59] car #6 moves tunnel -> dry
+[08:59] car #6 enters dry post 1
+[08:59] dry post 1 starts on car #6 Standard (4 min)
+[08:59] car #13 leaves prewash post 1
+[08:59] car #21 enters prewash post 1
+[08:59] prewash post 1 starts on car #21 Premium (3 min)
+[08:59] car #13 moves prewash -> tunnel
+[08:59] car #13 waits in tunnel queue (1/1)
+[08:59] car #33 arrives at the entrance
+[08:59] car #33 chooses Premium (prewash > tunnel > wax > dry)
+[08:59] car #33 waits in prewash queue (3/3)
+[09:00] car #34 arrives at the entrance
+[09:00] car #34 chooses Premium (prewash > tunnel > wax > dry)
+[09:00] car #34 turned away: prewash queue is full (3/3)
+[09:02] prewash post 1 finished car #21
+[09:02] car #21 waits on prewash post 1: tunnel is full
+[09:02] car #35 arrives at the entrance
+[09:02] car #35 chooses Express (tunnel > dry)
+[09:02] car #35 turned away: tunnel queue is full (1/1)
+[09:03] dry post 1 finished car #6
+[09:03] car #6 leaves dry post 1
+[09:03] car #6 is clean! Standard done in 54 min, drives away
+[09:04] car #36 arrives at the entrance
+[09:04] car #36 chooses Standard (prewash > tunnel > dry)
+[09:04] car #36 turned away: prewash queue is full (3/3)
+[09:05] tunnel post 1 finished car #10
+[09:05] car #10 leaves tunnel post 1
+[09:05] car #13 enters tunnel post 1
+[09:05] tunnel post 1 starts on car #13 Standard (9 min)
+[09:05] car #10 moves tunnel -> wax
+[09:05] car #10 enters wax post 1
+[09:05] wax post 1 starts on car #10 Premium (6 min)
+[09:05] car #37 arrives at the entrance
+[09:05] car #37 chooses Standard (prewash > tunnel > dry)
+[09:05] car #21 leaves prewash post 1
+[09:05] car #24 enters prewash post 1
+[09:05] prewash post 1 starts on car #24 Premium (4 min)
+[09:05] car #21 moves prewash -> tunnel
+[09:05] car #21 waits in tunnel queue (1/1)
+[09:05] car #37 waits in prewash queue (3/3)
+[09:07] car #38 arrives at the entrance
+[09:07] car #38 chooses Premium (prewash > tunnel > wax > dry)
+[09:07] car #38 turned away: prewash queue is full (3/3)
+[09:09] prewash post 1 finished car #24
+[09:09] car #24 waits on prewash post 1: tunnel is full
+[09:09] car #39 arrives at the entrance
+[09:09] car #39 chooses Standard (prewash > tunnel > dry)
+[09:09] car #39 turned away: prewash queue is full (3/3)
+[09:11] wax post 1 finished car #10
+[09:11] car #10 leaves wax post 1
+[09:11] car #10 moves wax -> dry
+[09:11] car #10 enters dry post 1
+[09:11] dry post 1 starts on car #10 Premium (4 min)
+[09:12] car #40 arrives at the entrance
+[09:12] car #40 chooses Express (tunnel > dry)
+[09:12] car #40 turned away: tunnel queue is full (1/1)
+[09:14] tunnel post 1 finished car #13
+[09:14] car #13 leaves tunnel post 1
+[09:14] car #21 enters tunnel post 1
+[09:14] tunnel post 1 starts on car #21 Premium (8 min)
+[09:14] car #13 moves tunnel -> dry
+[09:14] car #13 waits in dry queue (1/1)
+[09:14] car #24 leaves prewash post 1
+[09:14] car #30 enters prewash post 1
+[09:14] prewash post 1 starts on car #30 Premium (5 min)
+[09:14] car #24 moves prewash -> tunnel
+[09:14] car #24 waits in tunnel queue (1/1)
+[09:14] car #41 arrives at the entrance
+[09:14] car #41 chooses Express (tunnel > dry)
+[09:14] car #41 turned away: tunnel queue is full (1/1)
+[09:15] dry post 1 finished car #10
+[09:15] car #10 leaves dry post 1
+[09:15] car #13 enters dry post 1
+[09:15] dry post 1 starts on car #13 Standard (3 min)
+[09:15] car #10 is clean! Premium done in 58 min, drives away
+[09:17] car #42 arrives at the entrance
+[09:17] car #42 chooses Express (tunnel > dry)
+[09:17] car #42 turned away: tunnel queue is full (1/1)
+[09:18] dry post 1 finished car #13
+[09:18] car #13 leaves dry post 1
+[09:18] car #13 is clean! Standard done in 57 min, drives away
+[09:19] prewash post 1 finished car #30
+[09:19] car #30 waits on prewash post 1: tunnel is full
+[09:19] car #43 arrives at the entrance
+[09:19] car #43 chooses Express (tunnel > dry)
+[09:19] car #43 turned away: tunnel queue is full (1/1)
+[09:20] car #44 arrives at the entrance
+[09:20] car #44 chooses Express (tunnel > dry)
+[09:20] car #44 turned away: tunnel queue is full (1/1)
+[09:22] tunnel post 1 finished car #21
+[09:22] car #21 leaves tunnel post 1
+[09:22] car #24 enters tunnel post 1
+[09:22] tunnel post 1 starts on car #24 Premium (6 min)
+[09:22] car #21 moves tunnel -> wax
+[09:22] car #21 enters wax post 1
+[09:22] car #45 arrives at the entrance
+[09:22] car #45 chooses Express (tunnel > dry)
+[09:22] car #45 turned away: tunnel queue is full (1/1)
+[09:22] wax post 1 starts on car #21 Premium (6 min)
+[09:22] car #30 leaves prewash post 1
+[09:22] car #33 enters prewash post 1
+[09:22] prewash post 1 starts on car #33 Premium (4 min)
+[09:22] car #30 moves prewash -> tunnel
+[09:22] car #30 waits in tunnel queue (1/1)
+[09:23] car #46 arrives at the entrance
+[09:23] car #46 chooses Premium (prewash > tunnel > wax > dry)
+[09:23] car #46 waits in prewash queue (2/3)
+[09:25] car #47 arrives at the entrance
+[09:25] car #47 chooses Premium (prewash > tunnel > wax > dry)
+[09:25] car #47 waits in prewash queue (3/3)
+[09:26] prewash post 1 finished car #33
+[09:26] car #33 waits on prewash post 1: tunnel is full
+[09:26] car #48 arrives at the entrance
+[09:26] car #48 chooses Express (tunnel > dry)
+[09:26] car #48 turned away: tunnel queue is full (1/1)
+[09:28] wax post 1 finished car #21
+[09:28] tunnel post 1 finished car #24
+[09:28] car #21 leaves wax post 1
+[09:28] car #21 moves wax -> dry
+[09:28] car #21 enters dry post 1
+[09:28] dry post 1 starts on car #21 Premium (4 min)
+[09:28] car #24 leaves tunnel post 1
+[09:28] car #30 enters tunnel post 1
+[09:28] tunnel post 1 starts on car #30 Premium (9 min)
+[09:28] car #24 moves tunnel -> wax
+[09:28] car #24 enters wax post 1
+[09:28] wax post 1 starts on car #24 Premium (5 min)
+[09:28] car #33 leaves prewash post 1
+[09:28] car #37 enters prewash post 1
+[09:28] prewash post 1 starts on car #37 Standard (4 min)
+[09:28] car #33 moves prewash -> tunnel
+[09:28] car #33 waits in tunnel queue (1/1)
+[09:29] car #49 arrives at the entrance
+[09:29] car #49 chooses Standard (prewash > tunnel > dry)
+[09:29] car #49 waits in prewash queue (3/3)
+[09:30] prewash post 1 BREAKS DOWN with car #37 on it (repair 7 min)
+[09:30] car #50 arrives at the entrance
+[09:30] car #50 chooses Standard (prewash > tunnel > dry)
+[09:30] car #50 turned away: prewash queue is full (3/3)
+[09:32] dry post 1 finished car #21
+[09:32] car #21 leaves dry post 1
+[09:32] car #21 is clean! Premium done in 54 min, drives away
+[09:32] car #51 arrives at the entrance
+[09:32] car #51 chooses Standard (prewash > tunnel > dry)
+[09:32] car #51 turned away: prewash queue is full (3/3)
+[09:33] wax post 1 finished car #24
+[09:33] car #24 leaves wax post 1
+[09:33] car #24 moves wax -> dry
+[09:33] car #24 enters dry post 1
+[09:33] dry post 1 starts on car #24 Premium (3 min)
+[09:33] car #52 arrives at the entrance
+[09:33] car #52 chooses Standard (prewash > tunnel > dry)
+[09:33] car #52 turned away: prewash queue is full (3/3)
+[09:34] car #53 arrives at the entrance
+[09:34] car #53 chooses Express (tunnel > dry)
+[09:34] car #53 turned away: tunnel queue is full (1/1)
+[09:36] dry post 1 finished car #24
+[09:36] car #24 leaves dry post 1
+[09:36] car #24 is clean! Premium done in 51 min, drives away
+[09:36] car #54 arrives at the entrance
+[09:36] car #54 chooses Standard (prewash > tunnel > dry)
+[09:36] car #54 turned away: prewash queue is full (3/3)
+[09:37] prewash post 1 is repaired and back in service
+[09:37] tunnel post 1 finished car #30
+[09:37] car #30 leaves tunnel post 1
+[09:37] car #33 enters tunnel post 1
+[09:37] tunnel post 1 starts on car #33 Premium (6 min)
+[09:37] car #30 moves tunnel -> wax
+[09:37] car #30 enters wax post 1
+[09:37] wax post 1 starts on car #30 Premium (5 min)
+[09:38] tunnel post 1 BREAKS DOWN with car #33 on it (repair 9 min)
+[09:38] car #55 arrives at the entrance
+[09:38] car #55 chooses Premium (prewash > tunnel > wax > dry)
+[09:38] car #55 turned away: prewash queue is full (3/3)
+[09:39] prewash post 1 finished car #37
+[09:39] car #37 leaves prewash post 1
+[09:39] car #46 enters prewash post 1
+[09:39] prewash post 1 starts on car #46 Premium (4 min)
+[09:39] car #37 moves prewash -> tunnel
+[09:39] car #37 waits in tunnel queue (1/1)
+[09:39] car #56 arrives at the entrance
+[09:39] car #56 chooses Premium (prewash > tunnel > wax > dry)
+[09:39] car #56 waits in prewash queue (3/3)
+[09:41] car #57 arrives at the entrance
+[09:41] car #57 chooses Express (tunnel > dry)
+[09:41] car #57 turned away: tunnel queue is full (1/1)
+[09:42] wax post 1 finished car #30
+[09:42] car #30 leaves wax post 1
+[09:42] car #30 moves wax -> dry
+[09:42] car #30 enters dry post 1
+[09:42] dry post 1 starts on car #30 Premium (4 min)
+[09:43] prewash post 1 finished car #46
+[09:43] car #46 waits on prewash post 1: tunnel is full
+[09:43] car #58 arrives at the entrance
+[09:43] car #58 chooses Standard (prewash > tunnel > dry)
+[09:43] car #58 turned away: prewash queue is full (3/3)
+[09:45] car #59 arrives at the entrance
+[09:45] car #59 chooses Standard (prewash > tunnel > dry)
+[09:45] car #59 turned away: prewash queue is full (3/3)
+[09:46] dry post 1 finished car #30
+[09:46] car #30 leaves dry post 1
+[09:46] car #30 is clean! Premium done in 52 min, drives away
+[09:47] tunnel post 1 is repaired and back in service
+[09:47] car #60 arrives at the entrance
+[09:47] car #60 chooses Standard (prewash > tunnel > dry)
+[09:47] car #60 turned away: prewash queue is full (3/3)
+[09:47] ENTRANCE CLOSED, 6 accepted car(s) still inside
+[09:52] tunnel post 1 finished car #33
+[09:52] car #33 leaves tunnel post 1
+[09:52] car #37 enters tunnel post 1
+[09:52] tunnel post 1 starts on car #37 Standard (6 min)
+[09:52] car #33 moves tunnel -> wax
+[09:52] car #33 enters wax post 1
+[09:52] wax post 1 starts on car #33 Premium (4 min)
+[09:52] car #46 leaves prewash post 1
+[09:52] car #47 enters prewash post 1
+[09:52] prewash post 1 starts on car #47 Premium (5 min)
+[09:52] car #46 moves prewash -> tunnel
+[09:52] car #46 waits in tunnel queue (1/1)
+[09:56] wax post 1 finished car #33
+[09:56] car #33 leaves wax post 1
+[09:56] car #33 moves wax -> dry
+[09:56] car #33 enters dry post 1
+[09:56] dry post 1 starts on car #33 Premium (3 min)
+[09:57] prewash post 1 finished car #47
+[09:57] car #47 waits on prewash post 1: tunnel is full
+[09:58] tunnel post 1 finished car #37
+[09:58] car #37 leaves tunnel post 1
+[09:58] car #46 enters tunnel post 1
+[09:58] tunnel post 1 starts on car #46 Premium (6 min)
+[09:58] car #37 moves tunnel -> dry
+[09:58] car #37 waits in dry queue (1/1)
+[09:58] car #47 leaves prewash post 1
+[09:58] car #49 enters prewash post 1
+[09:58] prewash post 1 starts on car #49 Standard (3 min)
+[09:58] car #47 moves prewash -> tunnel
+[09:58] car #47 waits in tunnel queue (1/1)
+[09:59] dry post 1 finished car #33
+[09:59] car #33 leaves dry post 1
+[09:59] car #37 enters dry post 1
+[09:59] dry post 1 starts on car #37 Standard (5 min)
+[09:59] car #33 is clean! Premium done in 60 min, drives away
+[10:01] prewash post 1 finished car #49
+[10:01] car #49 waits on prewash post 1: tunnel is full
+[10:04] dry post 1 finished car #37
+[10:04] tunnel post 1 finished car #46
+[10:04] car #37 leaves dry post 1
+[10:04] car #37 is clean! Standard done in 59 min, drives away
+[10:04] car #46 leaves tunnel post 1
+[10:04] car #47 enters tunnel post 1
+[10:04] tunnel post 1 starts on car #47 Premium (6 min)
+[10:04] car #46 moves tunnel -> wax
+[10:04] car #46 enters wax post 1
+[10:04] wax post 1 starts on car #46 Premium (4 min)
+[10:04] car #49 leaves prewash post 1
+[10:04] car #56 enters prewash post 1
+[10:04] prewash post 1 starts on car #56 Premium (5 min)
+[10:04] car #49 moves prewash -> tunnel
+[10:04] car #49 waits in tunnel queue (1/1)
+[10:08] wax post 1 finished car #46
+[10:08] car #46 leaves wax post 1
+[10:08] car #46 moves wax -> dry
+[10:08] car #46 enters dry post 1
+[10:08] dry post 1 starts on car #46 Premium (3 min)
+[10:09] prewash post 1 finished car #56
+[10:09] car #56 waits on prewash post 1: tunnel is full
+[10:10] tunnel post 1 finished car #47
+[10:10] car #47 leaves tunnel post 1
+[10:10] car #49 enters tunnel post 1
+[10:10] tunnel post 1 starts on car #49 Standard (6 min)
+[10:10] car #47 moves tunnel -> wax
+[10:10] car #47 enters wax post 1
+[10:10] wax post 1 starts on car #47 Premium (6 min)
+[10:10] car #56 leaves prewash post 1
+[10:10] car #56 moves prewash -> tunnel
+[10:10] car #56 waits in tunnel queue (1/1)
+[10:11] dry post 1 finished car #46
+[10:11] car #46 leaves dry post 1
+[10:11] car #46 is clean! Premium done in 48 min, drives away
+[10:16] wax post 1 finished car #47
+[10:16] tunnel post 1 finished car #49
+[10:16] car #47 leaves wax post 1
+[10:16] car #47 moves wax -> dry
+[10:16] car #47 enters dry post 1
+[10:16] dry post 1 starts on car #47 Premium (3 min)
+[10:16] car #49 leaves tunnel post 1
+[10:16] car #56 enters tunnel post 1
+[10:16] tunnel post 1 starts on car #56 Premium (6 min)
+[10:16] car #49 moves tunnel -> dry
+[10:16] car #49 waits in dry queue (1/1)
+[10:19] dry post 1 finished car #47
+[10:19] car #47 leaves dry post 1
+[10:19] car #49 enters dry post 1
+[10:19] dry post 1 starts on car #49 Standard (3 min)
+[10:19] car #47 is clean! Premium done in 54 min, drives away
+[10:22] dry post 1 finished car #49
+[10:22] tunnel post 1 finished car #56
+[10:22] car #49 leaves dry post 1
+[10:22] car #49 is clean! Standard done in 53 min, drives away
+[10:22] car #56 leaves tunnel post 1
+[10:22] car #56 moves tunnel -> wax
+[10:22] car #56 enters wax post 1
+[10:22] wax post 1 starts on car #56 Premium (5 min)
+[10:27] wax post 1 finished car #56
+[10:27] car #56 leaves wax post 1
+[10:27] car #56 moves wax -> dry
+[10:27] car #56 enters dry post 1
+[10:27] dry post 1 starts on car #56 Premium (3 min)
+[10:30] dry post 1 finished car #56
+[10:30] car #56 leaves dry post 1
+[10:30] car #56 is clean! Premium done in 51 min, drives away
+
+=================== RESULTS ===================
+Outcome        : finished: entrance closed and every accepted car washed
+Model time     : 08:00 - 10:30 (150 min)
+Cars arrived   : 60 (accepted 17, turned away 43)
+Cars washed    : 17, still inside: 0
+Time at wash   : avg 48.8 min, max 60 min
+Waiting        : avg 31.7 min per car (queues, blocked posts, repairs)
+Throughput     : 6.8 cars per hour
+Failures       : 5, blocked-post episodes: 14
+Blocked time   : 57 car-minutes waiting for room
+By program     : Express     1 washed, avg 30.0 min
+                 Standard    8 washed, avg 46.5 min
+                 Premium     8 washed, avg 53.5 min
+Threads        : created 67 (cars 60), peak alive cars 9, parks 73
+
+TIMELINE OF POSTS, 1 column = 4 min:  # busy  = blocked  X broken  . idle
+             08:00          09:00          10:00     busy block repair
+prewash  P1 |##=#=##==###=####=####XX##==##=#......|  43%   37%    4%
+tunnel   P1 |.######XX###############XXX#########..|  80%    0%   11%
+wax      P1 |...........XX...##..###.##..#..###.##.|  27%    0%    5%
+dry      P1 |...#.XXX####.###..##..##.##..##.#.##.#|  41%    0%    5%
+Bottleneck     : tunnel (posts busy 81% of the time)
+Most blocked   : prewash (posts held finished cars 38% of the time)
+AUDITOR: invariants checked after each of 513 events, violations: 0
+  I1 a post holds at most its capacity    ok
+  I2 a car is in exactly one place        ok
+  I3 stages follow the program order      ok
+  I4 a broken post starts no operation    ok
+  I5 queue capacity is not exceeded       ok
+Journal saved to carwash.log (seed 7)
+[exit code 0]

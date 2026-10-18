@@ -1531,8 +1531,10 @@ static void ParkCar(Car *car, WaitKind kind, int stage) {
 
 /// Все машины снова «завершены»: иначе LineFree не даст уничтожить их потоки.
 static void UnparkCars(Line *l) {
-    for (Car *c = NULL; (c = LineCar(l, c ? c->id + 1 : 0)) != NULL;) {
+    int next = 0;
+    for (Car *c = LineCar(l, next); c != NULL; c = LineCar(l, next)) {
         c->th.state = ST_DONE;
+        next = c->id + 1;
     }
 }
 

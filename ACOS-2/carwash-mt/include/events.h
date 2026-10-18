@@ -36,8 +36,8 @@ typedef enum {
 
 /// Одно событие. Поля car, stage, post, program равны -1, если к событию не относятся.
 typedef struct {
+    long seq;  ///< сквозной номер, проставляет EventsEmit (первым: без дыры выравнивания)
     EventType type;
-    long seq;  ///< сквозной номер, проставляет EventsEmit
     int time;  ///< минута модели, проставляет EventsEmit
     int car, stage, post, program;
     int arg, arg2;  ///< смысл зависит от типа, см. EventType
