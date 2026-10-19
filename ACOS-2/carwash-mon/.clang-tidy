@@ -1,0 +1,30 @@
+# Проверки, которые реально ловят ошибки в C. Шумные стилистические выключены
+# (магические числа, длина имён, printf без проверки результата и т.п.).
+# ArrayBound из LLVM 23 не знает, что число стадий ограничено при разборе
+# конфига, и ругается на каждый stage[s] - поэтому тоже выключен.
+Checks: >
+  clang-analyzer-*,
+  bugprone-*,
+  concurrency-*,
+  performance-*,
+  portability-*,
+  readability-*,
+  misc-*,
+  cert-*,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-narrowing-conversions,
+  -bugprone-assignment-in-if-condition,
+  -readability-magic-numbers,
+  -readability-identifier-length,
+  -readability-function-cognitive-complexity,
+  -readability-avoid-const-params-in-decls,
+  -readability-isolate-declaration,
+  -readability-avoid-nested-conditional-operator,
+  -misc-include-cleaner,
+  -cert-err33-c,
+  -cert-dcl03-c,
+  -readability-trailing-comma,
+  -clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling,
+  -clang-analyzer-security.ArrayBound
+WarningsAsErrors: ''
+HeaderFilterRegex: 'include/.*'
