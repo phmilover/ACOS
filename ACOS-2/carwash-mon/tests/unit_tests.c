@@ -379,6 +379,8 @@ typedef struct {
     int seen;                        // сколько потоков обошёл SimForEach за последний вызов
     const SimThread *watch;          // за каким потоком следить (NULL - ни за каким)
     SimState watchState[MAX_HOOKS];  // его состояние в каждом покое
+    void (*onFirst)(void *ctx);      // что сделать в первом покое (NULL - ничего), затем продолжить
+    void *firstCtx;
 } HookLog;
 
 static void CountQuiet(const SimThread *t, void *ctx) {
@@ -401,6 +403,10 @@ static int RecordHook(int now, int nextWake, void *ctx) {
     ++h->calls;
     h->seen = 0;
     SimForEach(CountQuiet, h);
+    if (h->calls == 1 && h->onFirst) {
+        h->onFirst(h->firstCtx);
+        return 1;
+    }
     return nextWake != -1;
 }
 
@@ -533,6 +539,7 @@ typedef struct {
     int aWaits;  // сколько раз вернулся SimWaitOn
     int aHeld;   // LockdepHeldCount() у A сразу после возврата SimWaitOn
     int wrongGrant, rightGrant;
+    int aWoke;  // SleepAfterWaiter: минута конца сна после ожидания
 } MonCtx;
 
 /// Сценарии B: разбудить через 2 минуты; сначала SimGrant с чужим условием; 5 минут
@@ -718,6 +725,47 @@ static void TestStopWakesCondWaiters(void) {
     }
 }
 
+/// После ожидания A спит 3 минуты.
+static void *SleepAfterWaiter(void *arg) {
+    MonCtx *c = arg;
+    if (SimBegin(&c->a) == SIM_OK) {
+        MutexLock(&c->m);
+        while (!c->flag && c->aStatus == SIM_OK) {
+            c->aStatus = SimWaitOn(&c->a, &c->c, &c->m, queueWait);
+            ++c->aWaits;
+        }
+        c->aSaw = SimNow();
+        MutexUnlock(&c->m);
+        if (c->aStatus == SIM_OK && SimSleep(&c->a, 3) == SIM_OK) {
+            c->aWoke = SimNow();
+        }
+    }
+    SimExit(&c->a);
+    return NULL;
+}
+
+static void GrantAFromHook(void *ctx) {
+    GrantA(ctx);
+    SleepMs(30);  // окно: если A запустился бы до конца крючка, он успел бы уснуть и проснуться
+}
+
+/// SimGrant из крючка (часы в это время никого не запускают): A запускается только после
+/// крючка и считается работающим, поэтому его сон длится 3 минуты, а не кончается сразу.
+static void TestGrantFromHook(void) {
+    for (int det = 0; det <= 1; ++det) {
+        MonCtx c = {.mode = B_NONE};
+        HookLog h = {.onFirst = GrantAFromHook, .firstCtx = &c};
+        RunMon(&c, det, &h, SleepAfterWaiter);
+        CHECK(c.rightGrant == 1);
+        CHECK(c.aStatus == SIM_OK && c.aWaits == 1 && c.aSaw == 0);
+        CHECK(c.aWoke == 3);
+        CHECK(h.calls == 3);  // 0 (A ждёт), 0 (A спит до 3), 3 (A вышел)
+        CHECK(h.now[1] == 0 && h.next[1] == 3);
+        CHECK(h.now[2] == 3 && h.next[2] == -1);
+        CHECK(h.notQuiet == 0);
+    }
+}
+
 static void TestWaitOnWithExtraLock(void) {
     MonCtx c = {.mode = B_GRANT_AFTER_2};
     HookLog h = {0};
@@ -744,7 +792,11 @@ struct GrantCtx {
     Cond c;
     int go[3];  // под m
     int log[3];
-    int len;  // журнал выходов, без мьютекса: в -D работает один поток
+    int len;   // журнал выходов, без мьютекса: в -D работает один поток
+    Mutex tm;  // TestStopWithTokenWaiters: B держит жетон, пока main не позовёт SimStop
+    Cond tc;
+    int bHolding, release;  // под tm
+    SimStatus bAfter;
 };
 
 static void *GrantWaiterMain(void *arg) {
@@ -784,7 +836,62 @@ static void *GrantOrderMain(void *arg) {
     return NULL;
 }
 
-static void RunGrantOrder(GrantCtx *g) {
+/// B разрешает выход потокам 1 и 2 (0 остаётся ждать на c) и держит жетон до release.
+static void *StopHolderMain(void *arg) {
+    GrantCtx *g = arg;
+    if (SimBegin(&g->b) == SIM_OK && SimSleep(&g->b, 1) == SIM_OK) {
+        MutexLock(&g->m);
+        for (int k = 1; k < 3; ++k) {
+            g->go[k] = 1;
+            SimGrant(&g->w[k].th, &g->c);
+        }
+        CondBroadcast(&g->c);
+        MutexUnlock(&g->m);
+        MutexLock(&g->tm);
+        g->bHolding = 1;
+        CondBroadcast(&g->tc);
+        while (!g->release) {
+            CondWait(&g->tc, &g->tm);
+        }
+        MutexUnlock(&g->tm);
+        g->bAfter = SimSleep(&g->b, 1);
+    }
+    SimExit(&g->b);
+    return NULL;
+}
+
+/// [0] - разрешённые, вышедшие из ожидания на c и ждущие жетона; [1] - ждущие на c.
+static void CountWaiters(const SimThread *t, void *ctx) {
+    int *n = ctx;
+    if (t->kind == TH_CAR && t->state == ST_READY && !t->waitCond) {
+        ++n[0];
+    } else if (t->kind == TH_CAR && t->state == ST_PARKED && t->waitCond) {
+        ++n[1];
+    }
+}
+
+/// main (не поток часов) зовёт SimStop, когда двое ждут жетона, а один - на условии.
+static void StopAmidTokenWaiters(GrantCtx *g) {
+    MutexLock(&g->tm);
+    while (!g->bHolding) {
+        CondWait(&g->tc, &g->tm);
+    }
+    MutexUnlock(&g->tm);
+    int n[2] = {0, 0};
+    for (int i = 0; i < 500 && (n[0] != 2 || n[1] != 1); ++i) {
+        SleepMs(2);
+        n[0] = n[1] = 0;
+        SimForEach(CountWaiters, n);  // вне крючка - только чтобы подсмотреть состояние
+    }
+    CHECK(n[0] == 2 && n[1] == 1);
+    SimStop();
+    MutexLock(&g->tm);
+    g->release = 1;
+    CondBroadcast(&g->tc);
+    MutexUnlock(&g->tm);
+}
+
+static void RunGrantOrder(GrantCtx *g, void *(*bMain)(void *), void (*during)(GrantCtx *g)) {
     HookLog h = {0};
     SimOptions o = {.deterministic = 1, .delayMs = 0, .hook = RecordHook, .ctx = &h};
     CHECK(SimInit(&o) == 0);
@@ -800,8 +907,11 @@ static void RunGrantOrder(GrantCtx *g) {
     }
     CHECK(SimThreadInit(&g->b, TH_POST, 3, "post B", 3) == 0);
     SimSpawned(&g->b);
-    CHECK(ThreadCreate(&tb, GrantOrderMain, g, 0) == 0);
+    CHECK(ThreadCreate(&tb, bMain, g, 0) == 0);
     CHECK(ThreadCreate(&clock, SimClockMain, NULL, 0) == 0);
+    if (during) {
+        during(g);
+    }
     pthread_join(clock, NULL);
     for (int i = 0; i < 3; ++i) {
         pthread_join(tw[i], NULL);
@@ -818,11 +928,26 @@ static void TestDeterministicGrantOrder(void) {
     static GrantCtx g1, g2;
     memset(&g1, 0, sizeof g1);
     memset(&g2, 0, sizeof g2);
-    RunGrantOrder(&g1);
-    RunGrantOrder(&g2);
+    RunGrantOrder(&g1, GrantOrderMain, NULL);
+    RunGrantOrder(&g2, GrantOrderMain, NULL);
     CHECK(g1.len == 3 && g2.len == 3);
     CHECK(g1.log[0] == 2 && g1.log[1] == 0 && g1.log[2] == 1);
     CHECK(memcmp(g1.log, g2.log, sizeof g1.log) == 0);
+}
+
+/// -D: SimStop из чужого потока будит и ждущих на условии монитора, и ждущих жетона.
+static void TestStopWithTokenWaiters(void) {
+    static GrantCtx g;
+    memset(&g, 0, sizeof g);
+    MutexInit(&g.tm, RANK_BUS, "holder test");
+    CHECK(CondInit(&g.tc) == 0);
+    RunGrantOrder(&g, StopHolderMain, StopAmidTokenWaiters);
+    CHECK(g.w[0].st == SIM_STOP && g.w[1].st == SIM_STOP && g.w[2].st == SIM_STOP);
+    CHECK(g.len == 0);
+    CHECK(g.bAfter == SIM_STOP);
+    CHECK(SimStopping());
+    CondDestroy(&g.tc);
+    MutexDestroy(&g.tm);
 }
 
 static int CountHook(int now, int nextWake, void *ctx) {
@@ -971,8 +1096,10 @@ int main(void) {
     RUN(TestGrantOnlyMatchingCond);
     RUN(TestSpuriousWakeIgnored);
     RUN(TestStopWakesCondWaiters);
+    RUN(TestGrantFromHook);
     RUN(TestWaitOnWithExtraLock);
     RUN(TestDeterministicGrantOrder);
+    RUN(TestStopWithTokenWaiters);
     RUN(TestClockWaitsStartBarrier);
     RUN(TestKickRerunsHook);
     RUN(TestKickCutsDelay);

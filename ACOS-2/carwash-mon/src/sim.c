@@ -16,10 +16,10 @@
 #define DELAY_CHUNK_MS 20  // задержка -d идёт кусками, чтобы остановка не ждала её конца
 #define MAX_STOP_PAIRS 64  // различных (условие, мьютекс) у ждущих: стадий 6 x (2 + 4 поста) + 1
 
-static Mutex mu;            // мьютекс часов
-static Cond quiet;          // часы ждут на ней покоя, SimKick или остановки
-static int muReady = 0;     // мьютекс создан (SimInit зовёт только главный поток)
-static int quietReady = 0;  // условная переменная часов создана
+static Mutex mu;                // мьютекс часов
+static Cond quiet;              // часы ждут на ней покоя, SimKick или остановки
+static atomic_int muReady = 0;  // мьютекс создан; SimKick читает из любого потока
+static int quietReady = 0;      // условная переменная часов создана
 
 static int now GUARDED_BY(mu) = 0;
 static int running GUARDED_BY(mu) = 0;              // сколько потоков модели работает
@@ -106,9 +106,9 @@ static SimStatus AwaitRun(SimThread *self) REQUIRES(mu) {
 }
 
 int SimInit(const SimOptions *o) {
-    if (!muReady) {
+    if (!atomic_load(&muReady)) {
         MutexInit(&mu, RANK_SIM, "sim clock");
-        muReady = 1;
+        atomic_store(&muReady, 1);
     }
     if (!quietReady) {
         if (CondInit(&quiet) != 0) {
@@ -269,10 +269,11 @@ SimStatus SimWaitOn(SimThread *self, Cond *c, Mutex *m, WaitReason why) {
     MutexLock(&mu);
     self->waitCond = NULL;
     self->waitMutex = NULL;
-    int needToken = self->granted && opt.deterministic && self->state != ST_RUNNING;
+    // разрешённый, но ещё не запущенный (очередь -D или разрешили во время крючка) ждёт запуска
+    int needRun = self->granted && self->state != ST_RUNNING;
     MutexUnlock(&mu);
-    if (needToken) {
-        // жетон ждём без m: иначе его держатель мог бы навсегда встать на m
+    if (needRun) {
+        // ждём без m: иначе держатель жетона (или крючок) мог бы навсегда встать на m
         MutexUnlock(m);
         MutexLock(&mu);
         AwaitRun(self);
@@ -471,7 +472,7 @@ long SimTotalParks(void) {
 
 void SimKick(void) {
     atomic_store(&kicked, 1);
-    if (!muReady) {
+    if (!atomic_load(&muReady)) {
         return;  // SimInit ещё не звали: будить некого
     }
     MutexLock(&mu);  // сигнал под мьютексом: часы не пропустят его между проверкой и ожиданием
