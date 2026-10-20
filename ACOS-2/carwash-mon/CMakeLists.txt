@@ -42,7 +42,7 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/bin")
 file(GLOB CORE_SOURCES CONFIGURE_DEPENDS src/*.c)
 list(FILTER CORE_SOURCES EXCLUDE REGEX "/main\\.c$")
 file(GLOB HEADERS CONFIGURE_DEPENDS include/*.h tests/*.h)
-set(TEST_SOURCES tests/unit_tests.c)
+set(TEST_SOURCES tests/unit_tests.c tests/run_tests.c)
 
 set(COMMON_DEFS _POSIX_C_SOURCE=200809L)
 if(APPLE)
@@ -66,10 +66,15 @@ target_link_options(cwcore PUBLIC ${SAN_FLAGS})
 target_link_libraries(cwcore PUBLIC Threads::Threads)
 set_target_properties(cwcore PROPERTIES OUTPUT_NAME cwcore${SUFFIX})
 
-# программа и сценарные тесты приходят в следующих задачах
+add_executable(carwash-mon src/main.c)
+target_link_libraries(carwash-mon PRIVATE cwcore)
+set_target_properties(carwash-mon PROPERTIES OUTPUT_NAME carwash-mon${SUFFIX})
 add_executable(unit_tests tests/unit_tests.c)
 target_link_libraries(unit_tests PRIVATE cwcore)
 set_target_properties(unit_tests PROPERTIES OUTPUT_NAME unit_tests${SUFFIX})
+add_executable(run_tests tests/run_tests.c)
+target_link_libraries(run_tests PRIVATE cwcore)
+set_target_properties(run_tests PROPERTIES OUTPUT_NAME run_tests${SUFFIX})
 
 # в src/, include/ и tests/ не должно быть семафоров (в том числе в комментариях)
 set(NOSEM_PATTERN "sem_|semaphore\\.h|dispatch_semaphore|\\bSem[A-Z(]")
@@ -77,19 +82,22 @@ add_custom_target(nosem
     COMMAND sh -c "if grep -rnE '${NOSEM_PATTERN}' src include tests; then echo 'nosem: FAIL'; exit 1; else echo 'nosem: PASS'; fi"
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR} VERBATIM)
 
-# cmake --build build --target check: проверка на семафоры и модульные тесты
+# cmake --build build --target check: проверка на семафоры, модульные, затем сценарные тесты
 enable_testing()
 add_test(NAME unit COMMAND unit_tests WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+add_test(NAME scenarios COMMAND run_tests $<TARGET_FILE:carwash-mon>
+         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 add_custom_target(check
     COMMAND unit_tests
-    DEPENDS nosem unit_tests
+    COMMAND run_tests $<TARGET_FILE:carwash-mon>
+    DEPENDS nosem unit_tests run_tests carwash-mon
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR} USES_TERMINAL)
 
 # clang-format и clang-tidy. В Homebrew llvm не попадает в PATH, поэтому смотрим и туда
 set(LLVM_HINTS /opt/homebrew/opt/llvm/bin /usr/local/opt/llvm/bin)
 find_program(CLANG_FORMAT clang-format HINTS ${LLVM_HINTS})
 find_program(CLANG_TIDY clang-tidy HINTS ${LLVM_HINTS})
-set(TIDY_SOURCES ${CORE_SOURCES})
+set(TIDY_SOURCES ${CORE_SOURCES} src/main.c)
 foreach(t ${TEST_SOURCES})
     if(EXISTS ${CMAKE_SOURCE_DIR}/${t})
         list(APPEND TIDY_SOURCES ${t})
