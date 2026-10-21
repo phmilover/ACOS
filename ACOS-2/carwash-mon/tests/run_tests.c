@@ -786,7 +786,7 @@ static void TestResults(void) {
 // Барьер старта: посты, координатор, часы и main проходят его вместе (normal.cfg: 6 постов)
 static void TestStartBarrier(void) {
     puts("== 22. The start barrier");
-    Run("barrier", 0, (const char *[]){"-c", "data/normal.cfg", "-s", "1", NULL});
+    Run("barrier", 0, (const char *[]){"-c", "data/normal.cfg", "-s", "1", "-m", "log", NULL});
     Expect("barrier", "^Threads +: .*start barrier 9 threads",
            "9 participants: 6 posts, coordinator, clock, main");
 #ifdef __APPLE__
@@ -794,8 +794,62 @@ static void TestStartBarrier(void) {
 #endif
 }
 
+// Последняя непустая строка вывода содержит needle
+static int LastLineHas(const char *name, const char *needle) {
+    char path[256];
+    TmpPath(path, sizeof(path), name, "out");
+    char *text = ReadFile(path);
+    int ok = 0;
+    if (text) {
+        size_t n = strlen(text);
+        while (n > 0 && (text[n - 1] == '\n' || text[n - 1] == ' ')) {
+            text[--n] = '\0';
+        }
+        const char *last = strrchr(text, '\n');
+        ok = strstr(last ? last + 1 : text, needle) != NULL;
+    }
+    free(text);
+    return ok;
+}
+
+static void TestLiveToFile(void) {
+    puts("== 23. Live view into a file");
+    Run("live", 0, (const char *[]){"-m", "live", "-d", "0", "-s", "1", NULL});
+    Expect("live", "THREADS", "the thread panel is drawn");
+    Expect("live", "\033\\[", "ANSI sequences are present");
+    Expect("live", "\033\\[\\?25l", "the cursor is hidden while drawing");
+    Expect("live", "\033\\[\\?25h", "the cursor is restored");
+    NotExpect("live", "^\\[[0-9]{2}:[0-9]{2}\\] car #", "the event feed does not go to the screen");
+    Report(LastLineHas("live", "Journal saved"), "live", "the last line is the summary");
+    char log[256];
+    TmpPath(log, sizeof(log), "live", "log");
+    char *journal = ReadFile(log);
+    Report(journal && strstr(journal, "arrives at the entrance"), "live",
+           "the feed still goes to the journal");
+    free(journal);
+}
+
+static void TestLiveInterrupt(void) {
+    puts("== 24. Live view: interrupt gives the cursor back");
+    pid_t pid = Start("liveint", (const char *[]){"-m", "live", "-d", "500", "-u", NULL});
+    SleepMs(700);
+    kill(pid, SIGINT);
+    CheckCode("liveint", WaitFor(pid, 1), 3);
+    char path[256];
+    TmpPath(path, sizeof(path), "liveint", "out");
+    char *text = ReadFile(path);
+    // курсор возвращается после последнего кадра (кадр начинается с ESC [ H)
+    const char *lastFrame = text ? strstr(text, "\033[H") : NULL;
+    for (const char *p = lastFrame; p; p = strstr(p + 1, "\033[H")) {
+        lastFrame = p;
+    }
+    Report(lastFrame && strstr(lastFrame, "\033[?25h"), "liveint",
+           "the cursor is shown again after the last frame");
+    free(text);
+}
+
 static void TestThreadColumn(void) {
-    puts("== 24. -t: the thread that reported each event");
+    puts("== 25. -t: the thread that reported each event");
     Run("column", 2, (const char *[]){"-t", "-c", "data/dead-stage.cfg", "-s", "3", NULL});
     Expect("column", "^\\[[0-9:]+\\] post tunnel\\.[12] +\\| tunnel post",
            "posts report their work");
@@ -820,7 +874,7 @@ static int AnswersFile(const char *name, const char *text) {
 }
 
 static void TestInteractive(void) {
-    puts("== 25. -i: parameters from the keyboard");
+    puts("== 26. -i: parameters from the keyboard");
     int in = AnswersFile("ask", "5\n\n\n0\n\n");  // 5 машин, без поломок, остальное как было
     CheckCode("ask",
               Wait(StartFull("ask", NULL, in, -1, -1,
@@ -849,7 +903,7 @@ static void TestInteractive(void) {
 }
 
 static void TestClosedPipe(void) {
-    puts("== 26. stdout is a closed pipe (carwash-mon -m log | head)");
+    puts("== 27. stdout is a closed pipe (carwash-mon -m log | head)");
     int fds[2];
     if (pipe(fds) != 0) {
         Report(0, "epipe", "pipe");
@@ -905,6 +959,8 @@ int main(int argc, char **argv) {
     TestManySeeds();
     TestResults();
     TestStartBarrier();
+    TestLiveToFile();
+    TestLiveInterrupt();
     TestThreadColumn();
     TestInteractive();
     TestClosedPipe();

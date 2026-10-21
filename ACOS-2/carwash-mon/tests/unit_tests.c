@@ -17,6 +17,7 @@
 #include "line.h"
 #include "memory.h"
 #include "quiesce.h"
+#include "render.h"
 #include "rng.h"
 #include "sim.h"
 #include "snapshot.h"
@@ -25,6 +26,7 @@
 #include "sync.h"
 #include "thread.h"
 #include "unit.h"
+#include "view_live.h"
 #include "view_log.h"
 #include "waitgraph.h"
 
@@ -2165,6 +2167,78 @@ static void TestSnapshotPanel(void) {
     LineFree(l);
 }
 
+/// Что ViewLiveDraw нарисовал за один кадр: через pipe (кадр меньше его буфера).
+static char frameOut[16384];
+
+static void TestLiveDrawText(void) {
+    Line *l = StuckLine();
+    ParkCar(LineCar(l, 2), WAIT_ROOM, S_WAX);
+    int fds[2];
+    CHECK(pipe(fds) == 0);
+    ViewLiveInit(fds[1], l->cfg);
+    ViewLiveEnd();
+    ssize_t n = read(fds[0], frameOut, sizeof frameOut - 1);  // очистка экрана и курсор
+    CHECK(n > 0);
+    Snapshot s;
+    SnapshotTake(l, &s);
+    ViewLiveDraw(&s);
+    n = read(fds[0], frameOut, sizeof frameOut - 1);
+    frameOut[n > 0 ? n : 0] = '\0';
+    CHECK(strstr(frameOut, "THREADS"));
+    CHECK(strstr(frameOut, "car #3 "));
+    CHECK(strstr(frameOut, "blocked") && strstr(frameOut, "-> room in wax"));
+    CHECK(strstr(frameOut, "no posts"));  // у wax нет постов
+    CHECK(strstr(frameOut, "entrance"));
+    close(fds[0]);
+    close(fds[1]);
+    UnparkCars(l);
+    LineFree(l);
+}
+
+static void TestRenderFrames(void) {
+    Config c;
+    LoadNormal(&c);
+    int fds[2];
+    CHECK(pipe(fds) == 0);
+    ViewLiveInit(fds[1], &c);
+    CHECK(RenderStart() == 0);
+    CHECK(RenderActive() == 1);
+    CHECK(RenderStart() == 0);  // повторный вызов ничего не делает
+    Snapshot s;
+    memset(&s, 0, sizeof s);
+    for (int minute = 0; minute < 3; ++minute) {
+        s.now = minute;
+        RenderSubmit(&s);
+    }
+    RenderFlush();
+    RenderStop();
+    CHECK(RenderActive() == 0);
+    ssize_t n = read(fds[0], frameOut, sizeof frameOut - 1);
+    frameOut[n > 0 ? n : 0] = '\0';
+    int frames = 0;
+    for (const char *p = frameOut; (p = strstr(p, "\033[H")) != NULL; p += 3) {
+        ++frames;
+    }
+    CHECK(frames == 3);
+    close(fds[0]);
+    close(fds[1]);
+}
+
+/// Остановка без единого кадра: поток ждёт кадр на notEmpty, RenderStop его будит.
+static void TestRenderStopWhileWaiting(void) {
+    Config c;
+    LoadNormal(&c);
+    ViewLiveInit(open("/dev/null", O_WRONLY), &c);
+    struct timespec t0, t1;
+    CHECK(RenderStart() == 0);
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    RenderStop();
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    CHECK(t1.tv_sec - t0.tv_sec < 1);
+    RenderStop();  // повторно безопасно
+    CHECK(RenderActive() == 0);
+}
+
 // ---- Аудитор: события подаются прямо в AuditorListener, без шины ----
 
 static Config auditCfg;
@@ -2349,6 +2423,60 @@ static void TestQuiesceNobodyToWake(void) {
     LineFree(l);
 }
 
+static atomic_int twoSubmitted = 0;
+
+static void *SubmitTwo(void *unused) {
+    (void)unused;
+    Snapshot s;
+    memset(&s, 0, sizeof s);
+    RenderSubmit(&s);
+    RenderSubmit(&s);
+    atomic_store(&twoSubmitted, 1);
+    return NULL;
+}
+
+static void *DrainPipe(void *arg) {
+    int fd = *(int *)arg;
+    char buf[4096];
+    while (read(fd, buf, sizeof buf) > 0) {
+    }
+    return NULL;
+}
+
+/// Два буфера по-настоящему: пока первый кадр рисуется (вывод застрял), второй уже кладётся.
+static void TestRenderDoubleBuffer(void) {
+    Config c;
+    LoadNormal(&c);
+    int fds[2];
+    CHECK(pipe(fds) == 0);
+    ViewLiveInit(fds[1], &c);  // пишет очистку экрана - до того, как pipe забит
+    // забиваем pipe, чтобы отрисовка первого кадра встала на write
+    int flags = fcntl(fds[1], F_GETFL);
+    fcntl(fds[1], F_SETFL, flags | O_NONBLOCK);  // NOLINT(bugprone-signed-bitwise)
+    char junk[4096];
+    memset(junk, 'x', sizeof junk);
+    while (write(fds[1], junk, sizeof junk) > 0) {
+    }
+    fcntl(fds[1], F_SETFL, flags);
+    CHECK(RenderStart() == 0);
+    atomic_store(&twoSubmitted, 0);
+    pthread_t sub, drain;
+    CHECK(pthread_create(&sub, NULL, SubmitTwo, NULL) == 0);
+    int ok = 0;
+    for (int i = 0; i < 500 && !(ok = atomic_load(&twoSubmitted)); ++i) {
+        struct timespec ts = {.tv_sec = 0, .tv_nsec = 1000000L};
+        nanosleep(&ts, NULL);
+    }
+    CHECK(ok);  // второй Submit не ждал, пока нарисуют первый
+    CHECK(pthread_create(&drain, NULL, DrainPipe, &fds[0]) == 0);
+    pthread_join(sub, NULL);
+    RenderFlush();  // ждёт оба кадра
+    RenderStop();
+    close(fds[1]);
+    pthread_join(drain, NULL);
+    close(fds[0]);
+}
+
 int main(void) {
     RUN(TestStageCapacity);
     RUN(TestBadCapacity);
@@ -2402,6 +2530,9 @@ int main(void) {
     RUN(TestWaitGraphDot);
     RUN(TestThreadTable);
     RUN(TestSnapshotPanel);
+    RUN(TestLiveDrawText);
+    RUN(TestRenderFrames);
+    RUN(TestRenderStopWhileWaiting);
     RUN(TestAuditorCleanRun);
     RUN(TestAuditorCapacity);
     RUN(TestAuditorTwoPlaces);
@@ -2411,5 +2542,6 @@ int main(void) {
     RUN(TestExitCode);
     RUN(TestFatalExit);
     RUN(TestQuiesceNobodyToWake);
+    RUN(TestRenderDoubleBuffer);
     return UnitSummary();
 }

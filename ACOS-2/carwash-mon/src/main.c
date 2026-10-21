@@ -31,11 +31,13 @@
 #include "line.h"
 #include "post.h"
 #include "quiesce.h"
+#include "render.h"
 #include "signals.h"
 #include "sim.h"
 #include "soft_assert.h"
 #include "stats.h"
 #include "thread.h"
+#include "view_live.h"
 #include "view_log.h"
 
 static void Usage(const char *prog) {
@@ -44,7 +46,7 @@ static void Usage(const char *prog) {
             "Usage: %s [options]\n"
             "  -c FILE   configuration file (default: built-in typical car wash)\n"
             "  -s SEED   random seed\n"
-            "  -d MS     display delay per model minute, ms\n"
+            "  -d MS     display delay per model minute, ms (default: 150 live, 0 log)\n"
             "  -m MODE   view: live (animated line) or log (event feed)\n"
             "  -l FILE   journal file (default: carwash.log)\n"
             "  -u        unlimited mode: no day end and no car limit, stop with Ctrl+C\n"
@@ -282,7 +284,6 @@ int main(int argc, char **argv) {
     // потока: маску наследуют все, сигналы достанутся только потоку sigwait
     SignalsBlock();
 
-    // живая схема появится позже (render/view_live); пока в любом режиме - лента
     int tty = isatty(1);
     ViewMode view = cfg.view == VIEW_AUTO ? (tty ? VIEW_LIVE : VIEW_LOG) : cfg.view;
     int delay = cfg.delayMs >= 0 ? cfg.delayMs : (view == VIEW_LIVE ? 150 : 0);
@@ -322,11 +323,29 @@ int main(int argc, char **argv) {
         perror("carwash-mon: cannot open journal, continuing without it");
     }
     EventsInit(&cfg);
-    ViewLogInit(1, tty, journal, cfg.threadColumn);
+    int live = view == VIEW_LIVE;
+    // в живой схеме лента на экран не идёт, только в журнал; схему рисует поток отрисовки
+    ViewLogInit(live ? -1 : 1, tty, journal, cfg.threadColumn);
     EventsSubscribe(ViewLogListener);
+    if (live) {
+        EventsSubscribe(ViewLiveListener);
+    }
     AuditorInit(2, &cfg);
     EventsSubscribe(AuditorListener);
     EventsSubscribe(StatsListener);
+    if (live && RenderStart() != 0) {
+        NoResources();
+        SignalsStop();
+        if (journal != -1) {
+            close(journal);
+        }
+        AuditorFree();
+        StatsFree();
+        GanttFree();
+        BarrierDestroy(&line.start);
+        LineFree(&line);
+        return 5;
+    }
     dprintf(1, "=== AUTOMATIC CAR WASH: simulation of one working day ===\n");
     ConfigPrint(&cfg, 1);
     dprintf(1, "Mode: %s\n\n", cfg.deterministic ? "deterministic (-D)" : "threads in parallel");
@@ -336,7 +355,14 @@ int main(int argc, char **argv) {
         dprintf(journal, "\n");
     }
 
+    if (live) {
+        ViewLiveInit(1, &cfg);
+        LockdepSetExitHook(ViewLiveEnd);  // LOCKDEP выходит через _exit: курсор вернуть и там
+    }
     RunModel(&line);
+    // последний кадр дорисовывается, затем курсор и цвета возвращаются на любом исходе
+    RenderStop();
+    ViewLiveEnd();
     SignalsStop();  // модель кончилась: дальнейшие сигналы ничего не меняют
     if (line.status == LINE_NO_RESOURCES) {
         NoResources();
