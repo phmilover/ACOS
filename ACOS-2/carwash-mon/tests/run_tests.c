@@ -359,17 +359,22 @@ static void TestJournalUnwritable(void) {
 
 static void TestThreadFailure(void) {
     puts("== 9. A thread cannot be created");
-    // отказ на самом первом потоке (пост): участник барьера старта не появился, барьер не
-    // отпустить - программа сразу выходит с кодом 5
+    // первый поток - поток сигналов (до модели): выход с кодом 5 до запуска модели
     pid_t pid = StartEnv("thrfail0", "CARWASH_FAIL_THREAD_AFTER=0",
                          (const char *[]){"-c", "data/normal.cfg", NULL});
     CheckCode("thrfail0", WaitFor(pid, 5), 5);
     Expect("thrfail0", "cannot create a thread", "the reason is reported");
-    // normal.cfg при старте создаёт 8 потоков: посты (1+2+1+2=6), координатор, часы - вызовы
-    // ThreadCreate с номерами 0..7. N = 12: машины 8..11 создаются, а на пятой машине поток не
-    // создаётся - ошибка приходит, когда потоки машин уже работают, и программа должна
+    // второй поток - первый пост: участник барьера старта не появился, барьер не отпустить -
+    // программа сразу выходит с кодом 5
+    pid = StartEnv("thrfail1", "CARWASH_FAIL_THREAD_AFTER=1",
+                   (const char *[]){"-c", "data/normal.cfg", NULL});
+    CheckCode("thrfail1", WaitFor(pid, 5), 5);
+    Expect("thrfail1", "cannot create a thread", "the reason is reported");
+    // normal.cfg при старте создаёт 9 потоков: сигналы, посты (1+2+1+2=6), координатор, часы -
+    // вызовы ThreadCreate с номерами 0..8. N = 13: машины 9..12 создаются, а на пятой машине
+    // поток не создаётся - ошибка приходит, когда потоки машин уже работают, и программа должна
     // остановить их всех, напечатать итоги и выйти с кодом 5
-    pid = StartEnv("thrfail", "CARWASH_FAIL_THREAD_AFTER=12",
+    pid = StartEnv("thrfail", "CARWASH_FAIL_THREAD_AFTER=13",
                    (const char *[]){"-c", "data/normal.cfg", "-s", "1", NULL});
     CheckCode("thrfail", WaitFor(pid, 5), 5);
     Expect("thrfail", "car #4 arrives", "cars were already running");
@@ -448,15 +453,355 @@ static void SleepMs(long ms) {
     nanosleep(&ts, NULL);
 }
 
+// Номер (с 1) первой строки вывода, где встречается text, или 0
+static long LineOf(const char *name, const char *text) {
+    char path[256];
+    TmpPath(path, sizeof(path), name, "out");
+    char *all = ReadFile(path);
+    long n = 0, found = 0;
+    char *save = NULL;
+    for (char *line = all ? strtok_r(all, "\n", &save) : NULL; line && !found;
+         line = strtok_r(NULL, "\n", &save)) {
+        ++n;
+        if (strstr(line, text)) {
+            found = n;
+        }
+    }
+    free(all);
+    return found;
+}
+
+static void TestStall(void) {
+    puts("== 11. Stall: the wait-for graph names the root cause");
+    Run("dead", 2, (const char *[]){"-c", "data/dead-stage.cfg", "-s", "3", NULL});
+    Expect("dead", "WARNING: program Premium needs stage wax", "warning at start");
+    Expect("dead", "STALL: .* stage wax has no posts", "stall names the stage");
+    Expect("dead", "WAITS-FOR GRAPH", "wait-for graph is printed");
+    Expect("dead", "ROOT CAUSE: stage wax has no posts", "graph names the root cause");
+    Expect("dead", "Outcome +: STALLED", "outcome is reported");
+    NotExpect("dead", "soft assert", "no soft asserts");
+
+    Run("dead-D", 2, (const char *[]){"-c", "data/dead-stage.cfg", "-s", "3", "-D", NULL});
+    Expect("dead-D", "ROOT CAUSE: stage wax has no posts", "-D: graph names the root cause");
+
+    // одна невыполнимая программа не должна останавливать мойку для остальных
+    Run("deadprog", 2, (const char *[]){"-c", "data/dead-program.cfg", "-s", "2", NULL});
+    long closed = LineOf("deadprog", "ENTRANCE CLOSED");
+    long stall = LineOf("deadprog", "STALL:");
+    Report(closed > 0 && stall > closed, "deadprog", "stall comes only after the entrance closes");
+
+    // в ИЗ1 из-за поломок пустых постов тупик находился только на 29-е сутки. При частых
+    // поломках машины Premium часто получают отказ все, и день кончается нормально (так при
+    // -s 2): берём seed, где Premium попадает на линию, и -D, чтобы исход не зависел от ОС
+    char cfg[256];
+    TmpPath(cfg, sizeof(cfg), "deadfail", "cfg");
+    WriteWithFailure("data/dead-stage.cfg", cfg, "failure = 0.2 5 40");
+    Run("deadfail", 2, (const char *[]){"-c", cfg, "-s", "3", "-D", NULL});
+    Expect("deadfail", "STALL: .* stage wax has no posts", "the stall is reported");
+    NotExpect("deadfail", "^\\[d[0-9]+ ", "stall is found on the first day despite failures");
+}
+
+static void TestStallDot(void) {
+    puts("== 12. Stall: the wait-for graph in DOT (-g)");
+    char dot[256];
+    TmpPath(dot, sizeof(dot), "g", "dot");
+    Run("deaddot", 2, (const char *[]){"-c", "data/dead-stage.cfg", "-s", "3", "-g", dot, NULL});
+    char *text = ReadFile(dot);
+    Report(text && strncmp(text, "digraph", 7) == 0, "deaddot", "the file starts with digraph");
+    Report(text && strstr(text, "wax"), "deaddot", "the graph mentions stage wax");
+    free(text);
+}
+
+static void TestSignals(void) {
+    puts("== 13. Unlimited mode is stopped by signals");
+    const int signals[] = {SIGINT, SIGTERM};
+    const char *names[] = {"SIGINT", "SIGTERM"};
+    for (int i = 0; i < 2; ++i) {
+        pid_t pid = Start(names[i], (const char *[]){"-u", "-d", "5", "-s", "5", NULL});
+        SleepMs(300);
+        kill(pid, signals[i]);
+        CheckCode(names[i], Wait(pid), 3);
+        Expect(names[i], "INTERRUPTED by user", "interruption is reported");
+
+        char log[256];
+        TmpPath(log, sizeof(log), names[i], "log");
+        char *journal = ReadFile(log);
+        Report(journal && strstr(journal, "INTERRUPTED") && strstr(journal, "RESULTS"), names[i],
+               "journal has the interruption and results");
+        free(journal);
+    }
+    // тупик вне досягаемости: -u на dead-stage.cfg, машины упираются в wax, а въезд открыт
+    // вечно. Прерывание всё равно доходит: поток сигналов будит часы (SimKick), крючок видит
+    // запрос в момент покоя
+    pid_t pid = Start("int-dead", (const char *[]){"-c", "data/dead-stage.cfg", "-u", "-d", "5",
+                                                   "-s", "3", NULL});
+    SleepMs(300);
+    kill(pid, SIGINT);
+    CheckCode("int-dead", WaitFor(pid, 2), 3);
+    Expect("int-dead", "INTERRUPTED by user", "dead-stage -u: interruption within 2 s");
+}
+
+static void TestSnapshotSignal(void) {
+    puts("== 14. SIGUSR1 prints a snapshot and the run goes on");
+    pid_t pid = Start("usr1", (const char *[]){"-u", "-d", "5", "-s", "5", NULL});
+    SleepMs(300);
+    kill(pid, SIGUSR1);
+    SleepMs(300);
+    kill(pid, SIGINT);
+    CheckCode("usr1", Wait(pid), 3);
+    Expect("usr1", "WAITS-FOR GRAPH", "wait-for graph is printed");
+    Expect("usr1", "^THREADS", "thread table is printed");
+    Expect("usr1", "coordinator", "the table lists the coordinator");
+}
+
+static void TestCloseSignal(void) {
+    puts("== 15. SIGUSR2 closes the entrance early");
+    pid_t pid = Start("usr2", (const char *[]){"-u", "-d", "5", "-s", "5", NULL});
+    SleepMs(300);
+    kill(pid, SIGUSR2);
+    CheckCode("usr2", Wait(pid), 0);
+    Expect("usr2", "ENTRANCE CLOSED", "entrance closes");
+    Expect("usr2", "Outcome +: finished", "accepted cars are washed");
+    Expect("usr2", "still inside: 0", "nobody is left inside");
+}
+
+// Сумма мест линии (посты x ёмкость + очереди) по строкам ConfigPrint из вывода, или -1
+static int LinePlaces(const char *name) {
+    char path[256];
+    TmpPath(path, sizeof(path), name, "out");
+    char *all = ReadFile(path);
+    int places = 0, stages = 0;
+    char *save = NULL;
+    for (char *line = all ? strtok_r(all, "\n", &save) : NULL; line;
+         line = strtok_r(NULL, "\n", &save)) {
+        char stage[16];
+        int posts = 0, cap = 1, queue = 0;
+        // строки печатает сама программа: "  tunnel    posts 2 x2, operation 6-9 min, queue 2"
+        // NOLINTNEXTLINE(bugprone-unchecked-string-to-number-conversion,cert-err34-c)
+        if (sscanf(line, "  %15s posts %d", stage, &posts) != 2) {
+            continue;
+        }
+        const char *x = strstr(line, " x");
+        const char *q = strstr(line, "queue ");
+        if (x && x < strstr(line, ",")) {
+            cap = (int)strtol(x + 2, NULL, 10);
+        }
+        if (q) {
+            queue = (int)strtol(q + 6, NULL, 10);
+        }
+        places += (posts * cap) + queue;
+        ++stages;
+    }
+    free(all);
+    return stages > 0 ? places : -1;
+}
+
+static void TestUnlimitedReaping(void) {
+    puts("== 16. Unlimited mode: car threads are reaped as they leave");
+    pid_t pid = Start("reap", (const char *[]){"-u", "-d", "0", "-s", "3", NULL});
+    SleepMs(2000);
+    kill(pid, SIGINT);
+    CheckCode("reap", Wait(pid), 3);
+    char path[256];
+    TmpPath(path, sizeof(path), "reap", "out");
+    char *all = ReadFile(path);
+    const char *at = all ? strstr(all, "\nThreads ") : NULL;
+    int created = -1, cars = -1, peak = -1;
+    long waits = -1;
+    // NOLINTNEXTLINE(bugprone-unchecked-string-to-number-conversion,cert-err34-c)
+    int got = at ? sscanf(at, "\nThreads : created %d (cars %d), peak alive cars %d, waits %ld",
+                          &created, &cars, &peak, &waits)
+                 : 0;
+    free(all);
+    int places = LinePlaces("reap");
+    char what[160];
+    snprintf(what, sizeof(what), "created %d threads (%d cars), peak alive cars %d <= %d + 1",
+             created, cars, peak, places);
+    Report(got == 4 && places > 0 && created > 100 && peak <= places + 1 && peak > 0, "reap", what);
+}
+
+static void TestSabotageOverflow(void) {
+    puts("== 17. Sabotage -x overflow: the auditor and SOFT_ASSERT catch it");
+    Run("overflow", 4,
+        (const char *[]){"-x", "overflow", "-c", "data/rush-hour.cfg", "-s", "3", NULL});
+    Expect("overflow", "I5 violated", "the auditor reports I5");
+    Expect("overflow", "soft assert failed", "SOFT_ASSERT fires too");
+    Run("overflow-D", 4,
+        (const char *[]){"-x", "overflow", "-c", "data/rush-hour.cfg", "-s", "3", "-D", NULL});
+    Expect("overflow-D", "I5 violated", "-D: the auditor reports I5");
+    Expect("overflow-D", "soft assert failed", "-D: SOFT_ASSERT fires too");
+    Expect("overflow-D", "soft asserts failed [0-9]+ time", "-D: the soft assert total is printed");
+    // встроенная конфигурация: саботаж виден на любом seed, а не только при давке
+    for (int det = 0; det <= 1; ++det) {
+        int seeds = det ? 10 : 30, bad = 0, firstBad = 0;
+        for (int seed = 1; seed <= seeds; ++seed) {
+            char s[16];
+            snprintf(s, sizeof(s), "%d", seed);
+            const char *const plain[] = {"-x", "overflow", "-d", "0", "-s", s, NULL};
+            const char *const detArgs[] = {"-x", "overflow", "-d", "0", "-s", s, "-D", NULL};
+            int code = Wait(Start("overflow-def", det ? detArgs : plain));
+            if ((code != 4 || !Matches("overflow-def", "out", "I5 violated")) && bad++ == 0) {
+                firstBad = seed;
+            }
+        }
+        char what[128];
+        snprintf(what, sizeof(what),
+                 "default config%s, seeds 1..%d: exit 4 and I5 (%d bad, first %d)",
+                 det ? " -D" : "", seeds, bad, firstBad);
+        Report(bad == 0, "overflow-def", what);
+    }
+}
+
+static void TestSabotageDeadlock(void) {
+    puts("== 18. Sabotage -x deadlock: LOCKDEP reports it, the program does not hang");
+    // фатальный LOCKDEP выходит через _exit(4) при живых потоках - так задумано, и сборка -tsan
+    // сочла бы это утечкой потоков; гонки данных TSan при этом по-прежнему ищет
+    pid_t pid = StartEnv("deadlock", "TSAN_OPTIONS=report_thread_leaks=0",
+                         (const char *[]){"-x", "deadlock", "-c", "data/rush-hour.cfg", NULL});
+    CheckCode("deadlock", WaitFor(pid, 5), 4);
+    Expect("deadlock", "LOCKDEP:", "lock order violation is reported");
+    // встроенная конфигурация: ловится на первом же переезде машины, на любом seed
+    for (int det = 0; det <= 1; ++det) {
+        int seeds = det ? 5 : 30, bad = 0, firstBad = 0;
+        for (int seed = 1; seed <= seeds; ++seed) {
+            char s[16];
+            snprintf(s, sizeof(s), "%d", seed);
+            const char *const plain[] = {"-x", "deadlock", "-d", "0", "-s", s, NULL};
+            const char *const detArgs[] = {"-x", "deadlock", "-d", "0", "-s", s, "-D", NULL};
+            int code = WaitFor(StartEnv("deadlock-def", "TSAN_OPTIONS=report_thread_leaks=0",
+                                        det ? detArgs : plain),
+                               5);
+            if ((code != 4 || !Matches("deadlock-def", "out", "LOCKDEP: thread car #")) &&
+                bad++ == 0) {
+                firstBad = seed;
+            }
+        }
+        char what[128];
+        snprintf(what, sizeof(what),
+                 "default config%s, seeds 1..%d: exit 4 and LOCKDEP (%d bad, first %d)",
+                 det ? " -D" : "", seeds, bad, firstBad);
+        Report(bad == 0, "deadlock-def", what);
+    }
+}
+
+// Оканчивается ли строка s на suffix
+static int EndsWith(const char *s, const char *suffix) {
+    size_t n = strlen(s), m = strlen(suffix);
+    return n >= m && strcmp(s + n - m, suffix) == 0;
+}
+
+static void TestSabotageRaceTsan(void) {
+    puts("== 19. Sabotage -x race: ThreadSanitizer catches it");
+    if (!EndsWith(bin, "-tsan")) {
+        // без TSan гонку никто не увидит - программа честно об этом говорит
+        Run("race-plain", 0, (const char *[]){"-x", "race", "-c", "data/tiny.cfg", NULL});
+        Expect("race-plain", "race sabotage is only visible in the -tsan build",
+               "the run says that only the -tsan build shows the race");
+        puts("  SKIP race: needs the -tsan build (./bin/run_tests ./bin/carwash-mon-tsan)");
+        return;
+    }
+    // здесь отчёт TSan - ожидаемый результат, поэтому не CheckCode (он считает его провалом).
+    // Код выхода не проверяем: найдя гонку, TSan сам меняет его (66, а на macOS по умолчанию
+    // abort_on_error=1 - SIGABRT при выходе)
+    int code =
+        Wait(Start("race", (const char *[]){"-x", "race", "-c", "data/rush-hour.cfg", NULL}));
+    Report(code != -2, "race", "the run finishes in time");
+    Expect("race", "ThreadSanitizer: data race", "the data race is reported");
+}
+
+// Сценарии с ожидаемым кодом выхода для TestManySeeds
+static const struct {
+    const char *cfg;
+    int code;
+} SEED_SCENARIOS[] = {
+    {"data/normal.cfg", 0},   {"data/rush-hour.cfg", 0},  {"data/breakdowns.cfg", 0},
+    {"data/capacity.cfg", 0}, {"data/dead-stage.cfg", 2},
+};
+#define SEED_BATCH 8  // столько прогонов идут одновременно
+
+static void TestManySeeds(void) {
+    puts("== 20. Many seeds: no violations, no soft asserts, no LOCKDEP");
+    const int scenarios = (int)(sizeof(SEED_SCENARIOS) / sizeof(SEED_SCENARIOS[0]));
+    for (int det = 0; det <= 1; ++det) {
+        int seeds = det ? 10 : 40, total = scenarios * seeds, bad = 0, runs = 0;
+        char firstBad[160] = "";
+        for (int from = 0; from < total; from += SEED_BATCH) {
+            pid_t pid[SEED_BATCH];
+            char name[SEED_BATCH][32];
+            int n = 0;
+            for (int i = from; i < total && n < SEED_BATCH; ++i, ++n) {
+                char seed[16];
+                snprintf(seed, sizeof(seed), "%d", (i % seeds) + 1);
+                snprintf(name[n], sizeof(name[n]), "seeds-%d", n);
+                const char *cfg = SEED_SCENARIOS[i / seeds].cfg;
+                pid[n] =
+                    det ? Start(name[n],
+                                (const char *[]){"-c", cfg, "-s", seed, "-d", "0", "-D", NULL})
+                        : Start(name[n], (const char *[]){"-c", cfg, "-s", seed, "-d", "0", NULL});
+            }
+            for (int k = 0; k < n; ++k) {
+                int i = from + k;
+                int code = Wait(pid[k]);
+                ++runs;
+                int wrong = code != SEED_SCENARIOS[i / seeds].code ||
+                            Matches(name[k], "out", "AUDITOR: \\[|violated") ||
+                            Matches(name[k], "out", "soft assert") ||
+                            Matches(name[k], "out", "LOCKDEP") ||
+                            Matches(name[k], "out", "WARNING: ThreadSanitizer");
+                if (wrong && bad++ == 0) {
+                    snprintf(firstBad, sizeof(firstBad), "; first: %s -s %d%s, exit code %d",
+                             SEED_SCENARIOS[i / seeds].cfg, (i % seeds) + 1, det ? " -D" : "",
+                             code);
+                }
+            }
+        }
+        char what[256];
+        snprintf(what, sizeof(what), "%s%d runs, %d bad%s", det ? "-D: " : "", runs, bad, firstBad);
+        Report(bad == 0 && runs == total, "seeds", what);
+    }
+}
+
+static void TestResults(void) {
+    puts("== 21. Results: statistics, timeline of posts, auditor summary");
+    Run("results", 0, (const char *[]){"-c", "data/rush-hour.cfg", "-s", "3", NULL});
+    Expect("results", "RESULTS", "results are printed");
+    Expect("results", "By program", "per-program statistics");
+    Expect("results", "TIMELINE OF POSTS", "timeline of posts (Gantt chart)");
+    Expect("results",
+           "^Threads +: created [0-9]+ \\(cars [0-9]+\\), peak alive cars [0-9]+, "
+           "waits [0-9]+, start barrier [0-9]+ threads",
+           "thread statistics");
+    Expect("results", "^Blocked time +: [0-9]+ car-minutes waiting for room", "blocked time");
+    Expect("results", "Bottleneck", "the bottleneck stage is named");
+    Expect("results", "AUDITOR: invariants checked after each of [1-9][0-9]* events, violations: 0",
+           "auditor summary");
+    char log[256];
+    TmpPath(log, sizeof(log), "results", "log");
+    char *journal = ReadFile(log);
+    Report(journal && strstr(journal, "TIMELINE OF POSTS") && strstr(journal, "AUDITOR"), "results",
+           "journal has the timeline and the auditor summary");
+    free(journal);
+}
+
+// Барьер старта: посты, координатор, часы и main проходят его вместе (normal.cfg: 6 постов)
+static void TestStartBarrier(void) {
+    puts("== 22. The start barrier");
+    Run("barrier", 0, (const char *[]){"-c", "data/normal.cfg", "-s", "1", NULL});
+    Expect("barrier", "^Threads +: .*start barrier 9 threads",
+           "9 participants: 6 posts, coordinator, clock, main");
+#ifdef __APPLE__
+    Expect("barrier", "^Threads +: .*\\(mutex\\+cond\\)", "macOS: barrier on a mutex and a cond");
+#endif
+}
+
 static void TestThreadColumn(void) {
-    puts("== 11. -t: the thread that reported each event");
-    Run("column", 0, (const char *[]){"-t", "-c", "data/normal.cfg", "-s", "3", NULL});
+    puts("== 24. -t: the thread that reported each event");
+    Run("column", 2, (const char *[]){"-t", "-c", "data/dead-stage.cfg", "-s", "3", NULL});
     Expect("column", "^\\[[0-9:]+\\] post tunnel\\.[12] +\\| tunnel post",
            "posts report their work");
     Expect("column", "^\\[[0-9:]+\\] car #[0-9]+ +\\| car #[0-9]+ arrives",
            "cars report themselves");
-    Expect("column", "^\\[[0-9:]+\\] coordinator +\\| ENTRANCE CLOSED",
-           "the coordinator closes the entrance");
+    Expect("column", "^\\[[0-9:]+\\] clock +\\| STALL", "the stall comes from the clock thread");
 }
 
 // Файл с ответами на вопросы -i. @return открытый на чтение дескриптор или -1
@@ -475,7 +820,7 @@ static int AnswersFile(const char *name, const char *text) {
 }
 
 static void TestInteractive(void) {
-    puts("== 12. -i: parameters from the keyboard");
+    puts("== 25. -i: parameters from the keyboard");
     int in = AnswersFile("ask", "5\n\n\n0\n\n");  // 5 машин, без поломок, остальное как было
     CheckCode("ask",
               Wait(StartFull("ask", NULL, in, -1, -1,
@@ -504,7 +849,7 @@ static void TestInteractive(void) {
 }
 
 static void TestClosedPipe(void) {
-    puts("== 13. stdout is a closed pipe (carwash-mon -m log | head)");
+    puts("== 26. stdout is a closed pipe (carwash-mon -m log | head)");
     int fds[2];
     if (pipe(fds) != 0) {
         Report(0, "epipe", "pipe");
@@ -548,6 +893,18 @@ int main(int argc, char **argv) {
     TestJournalUnwritable();
     TestThreadFailure();
     TestOperationLength();
+    TestStall();
+    TestStallDot();
+    TestSignals();
+    TestSnapshotSignal();
+    TestCloseSignal();
+    TestUnlimitedReaping();
+    TestSabotageOverflow();
+    TestSabotageDeadlock();
+    TestSabotageRaceTsan();
+    TestManySeeds();
+    TestResults();
+    TestStartBarrier();
     TestThreadColumn();
     TestInteractive();
     TestClosedPipe();

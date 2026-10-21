@@ -3,13 +3,13 @@
  * @brief Автомойка, вариант 43, многопоточная на мониторах: поток на машину, пост и
  * координатора.
  *
- * Главный поток разбирает ключи и конфиг, создаёт посты, координатора и часы, и все они вместе
- * с ним проходят барьер старта (Line.start): модель начинается, только когда все участники
- * созданы. Затем main ждёт их завершения (join), собирает оставшиеся потоки машин и печатает
- * итоги.
+ * Главный поток разбирает ключи и конфиг, блокирует сигналы (их забирает поток sigwait,
+ * signals.h), создаёт посты, координатора и часы, и все они вместе с ним проходят барьер старта
+ * (Line.start): модель начинается, только когда все участники созданы. Затем main ждёт их
+ * завершения (join), собирает оставшиеся потоки машин и печатает итоги.
  *
  * Коды выхода: 0 - всё вымыто, 1 - плохие параметры, 2 - тупик, 3 - прервали сигналом,
- * 4 - сработала проверка (LOCKDEP, SOFT_ASSERT), 5 - не хватило ресурсов (память, поток,
+ * 4 - сработала проверка (аудитор, LOCKDEP, SOFT_ASSERT), 5 - не хватило ресурсов (память, поток,
  * условная переменная). Не создался участник барьера старта - выход с кодом 5 сразу, без
  * итогов: барьер нельзя пройти без всех участников, а уже созданные ждут на нём.
  */
@@ -23,14 +23,18 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "auditor.h"
 #include "config.h"
 #include "coordinator.h"
 #include "events.h"
+#include "gantt.h"
 #include "line.h"
 #include "post.h"
 #include "quiesce.h"
+#include "signals.h"
 #include "sim.h"
 #include "soft_assert.h"
+#include "stats.h"
 #include "thread.h"
 #include "view_log.h"
 
@@ -52,10 +56,12 @@ static void Usage(const char *prog) {
             "  -t        show the thread that reported each event\n"
             "  -g FILE   write the wait-for graph in DOT on a stall\n"
             "  -h        this help\n"
+            "Signals: SIGINT/SIGTERM interrupt (results and journal are saved), SIGUSR1 prints\n"
+            "         the wait-for graph and threads to stderr, SIGUSR2 closes the entrance early\n"
             "Exit codes: 0 done, 1 bad parameters, 2 stall, 3 interrupted, 4 a check failed\n"
-            "            (LOCKDEP or SOFT_ASSERT), 5 out of resources (memory, thread or\n"
-            "            condition variable). LOCKDEP and out of memory exit at once, without\n"
-            "            the results\n",
+            "            (auditor invariant, LOCKDEP or SOFT_ASSERT), 5 out of resources (memory,\n"
+            "            thread or condition variable). LOCKDEP and out of memory exit at once,\n"
+            "            without the results\n",
             prog);
 }
 
@@ -142,41 +148,16 @@ static int ApplyOptions(const Options *o, Config *cfg) {
     return 0;
 }
 
-static const char *Outcome(LineStatus status) {
-    switch (status) {
-    case LINE_FINISHED: return "finished: entrance closed and every accepted car washed";
-    case LINE_STALLED: return "STALLED: remaining cars can never be served";
-    case LINE_INTERRUPTED: return "INTERRUPTED by user";
-    case LINE_NO_RESOURCES: return "STOPPED: not enough resources (thread or condition variable)";
-    default: return "running";
-    }
+/// Итоги прогона: статистика, диаграмма Ганта, сводка аудитора (как в ИЗ1).
+static void PrintResults(int fd, Line *l, int color) {
+    StatsPrint(fd, l);
+    GanttPrint(fd, l->cfg, color);
+    AuditorPrint(fd);
 }
 
-/// Итоги прогона (пока исход и счётчики; полная статистика - stats.c).
-static void PrintResults(int fd, Line *l, int now) {
-    char from[16], to[16];
-    EventClock(0, from, sizeof(from));
-    EventClock(now, to, sizeof(to));
-    RwLockRead(&l->registry);
-    int arrived = l->carCount;
-    RwLockUnlock(&l->registry);
-    int peak = atomic_load(&l->peakAlive);
-    int rejected = atomic_load(&l->rejected), served = atomic_load(&l->served);
-    int inside = atomic_load(&l->inside), failures = atomic_load(&l->failures);
-
-    dprintf(fd, "\n=================== RESULTS ===================\n");
-    dprintf(fd, "Outcome        : %s\n", Outcome(l->status));
-    dprintf(fd, "Model time     : %s - %s (%d min)\n", from, to, now);
-    dprintf(fd, "Cars arrived   : %d (accepted %d, turned away %d)\n", arrived, arrived - rejected,
-            rejected);
-    dprintf(fd, "Cars washed    : %d, still inside: %d\n", served, inside);
-    dprintf(fd, "Failures       : %d\n", failures);
-    dprintf(fd, "Car threads    : %d, at most %d at once\n", arrived, peak);
-}
-
-/// Нарушение (LOCKDEP в нефатальном режиме, SOFT_ASSERT) важнее исхода модели.
+/// Нарушение (аудитор, LOCKDEP в нефатальном режиме, SOFT_ASSERT) важнее исхода модели.
 static int ExitCode(const Line *l) {
-    return LineExitCode(l->status, 0, LockdepViolations(), SoftAssertFailures());
+    return LineExitCode(l->status, AuditorViolations(), LockdepViolations(), SoftAssertFailures());
 }
 
 /// Собрана ли программа с ThreadSanitizer (сборка -tsan).
@@ -297,6 +278,9 @@ int main(int argc, char **argv) {
         dprintf(2, "carwash-mon: race sabotage is only visible in the -tsan build "
                    "(ThreadSanitizer)\n");
     }
+    // после вопросов -i (Ctrl+C на них прерывает программу как обычно) и до любого другого
+    // потока: маску наследуют все, сигналы достанутся только потоку sigwait
+    SignalsBlock();
 
     // живая схема появится позже (render/view_live); пока в любом режиме - лента
     int tty = isatty(1);
@@ -324,6 +308,14 @@ int main(int argc, char **argv) {
         LineFree(&line);
         return 5;
     }
+    // после LineInit: он обнуляет line.requests, куда пишет поток сигналов. Сигнал, пришедший
+    // раньше, не теряется - он заблокирован и ждёт sigwait
+    if (SignalsStart(&line) != 0) {
+        NoResources();
+        BarrierDestroy(&line.start);
+        LineFree(&line);
+        return 5;
+    }
 
     int journal = open(cfg.journal, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (journal == -1) {
@@ -332,6 +324,9 @@ int main(int argc, char **argv) {
     EventsInit(&cfg);
     ViewLogInit(1, tty, journal, cfg.threadColumn);
     EventsSubscribe(ViewLogListener);
+    AuditorInit(2, &cfg);
+    EventsSubscribe(AuditorListener);
+    EventsSubscribe(StatsListener);
     dprintf(1, "=== AUTOMATIC CAR WASH: simulation of one working day ===\n");
     ConfigPrint(&cfg, 1);
     dprintf(1, "Mode: %s\n\n", cfg.deterministic ? "deterministic (-D)" : "threads in parallel");
@@ -342,13 +337,13 @@ int main(int argc, char **argv) {
     }
 
     RunModel(&line);
+    SignalsStop();  // модель кончилась: дальнейшие сигналы ничего не меняют
     if (line.status == LINE_NO_RESOURCES) {
         NoResources();
     }
-    int now = SimNow();
-    PrintResults(1, &line, now);
+    PrintResults(1, &line, tty);
     if (journal != -1) {
-        PrintResults(journal, &line, now);
+        PrintResults(journal, &line, 0);
         dprintf(journal, "seed %u (repeat the run with -s %u)\n", cfg.seed, cfg.seed);
         close(journal);
         dprintf(1, "Journal saved to %s (seed %u)\n", cfg.journal, cfg.seed);
@@ -359,6 +354,9 @@ int main(int argc, char **argv) {
     }
 
     int code = ExitCode(&line);
+    AuditorFree();
+    StatsFree();
+    GanttFree();
     BarrierDestroy(&line.start);
     LineFree(&line);
     return code;

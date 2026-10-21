@@ -1,25 +1,32 @@
 #include <errno.h>
+#include <fcntl.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
+#include "auditor.h"
 #include "barrier.h"
 #include "config.h"
 #include "events.h"
+#include "gantt.h"
 #include "line.h"
 #include "memory.h"
+#include "quiesce.h"
 #include "rng.h"
 #include "sim.h"
+#include "snapshot.h"
 #include "soft_assert.h"
 #include "stage.h"
 #include "sync.h"
 #include "thread.h"
 #include "unit.h"
 #include "view_log.h"
+#include "waitgraph.h"
 
 static void TestStageCapacity(void) {
     Config c;
@@ -1992,6 +1999,356 @@ static void TestWakeOnlyListed(void) {
     }
 }
 
+// ---- Граф ожидания, таблица потоков, снимок ----
+
+/// Что функция вывода пишет в дескриптор: через pipe (вывод маленький, буфера хватает).
+static char graphOut[8192];
+
+static const char *Capture(void (*print)(int fd, Line *l, int color), Line *l) {
+    int fds[2];
+    CHECK(pipe(fds) == 0);
+    print(fds[1], l, 0);
+    close(fds[1]);
+    ssize_t n = read(fds[0], graphOut, sizeof graphOut - 1);
+    graphOut[n > 0 ? n : 0] = '\0';
+    close(fds[0]);
+    return graphOut;
+}
+
+static void PrintThreads(int fd, Line *l, int color) {
+    (void)color;
+    WaitGraphThreads(fd, l->cfg);
+}
+
+/// Помытая машина на посту стадии s просит место на стадии next: места нет, и она встаёт в
+/// список ожидающих (как StageReserve, но без ожидания - потока у машины нет).
+static void Block(Line *l, int s, Car *car, int next) {
+    MutexLock(&l->stage[s].m);
+    l->stage[s].post[car->post].seat[car->seat].left = 0;
+    MutexUnlock(&l->stage[s].m);
+    CHECK(RoomTurn(l, next, car) == RES_NONE);
+    ListWaiter(l, next, car, atomic_fetch_add(&l->nextTicket, 1) + 1);
+}
+
+/// Пример: wax без постов, перед ним всё забито.
+static Line *StuckLine(void) {
+    LoadLineCfg(DEAD_CFG);
+    Line *l = OpenLine();
+    CHECK(Enter(l, S_WAX, NewCar(l, P_PREMIUM)) == ADMIT_QUEUE);  // #1
+    CHECK(Enter(l, S_WAX, NewCar(l, P_PREMIUM)) == ADMIT_QUEUE);  // #2
+    Car *c3 = NewCar(l, P_PREMIUM), *c4 = NewCar(l, P_PREMIUM);
+    CHECK(Enter(l, S_TUNNEL, c3) == ADMIT_SEAT);
+    CHECK(Enter(l, S_TUNNEL, c4) == ADMIT_SEAT);
+    Block(l, S_TUNNEL, c3, S_WAX);
+    Block(l, S_TUNNEL, c4, S_WAX);
+    Car *c5 = NewCar(l, P_STANDARD);
+    CHECK(Enter(l, S_PREWASH, c5) == ADMIT_SEAT);
+    CHECK(Enter(l, S_TUNNEL, NewCar(l, P_EXPRESS)) == ADMIT_QUEUE);  // #6
+    CHECK(Enter(l, S_TUNNEL, NewCar(l, P_EXPRESS)) == ADMIT_QUEUE);  // #7
+    Block(l, S_PREWASH, c5, S_TUNNEL);
+    return l;
+}
+
+static void TestWaitGraphText(void) {
+    Line *l = StuckLine();
+    const char *g = Capture(WaitGraphPrint, l);
+    CHECK(strstr(g, "WAITS-FOR GRAPH at 08:00 (7 car(s) stuck)\n") == g);
+    CHECK(strstr(g, "  car #1   in wax queue       -> waits for a post in wax\n"));
+    CHECK(strstr(g, "  car #3   on tunnel post 1   -> waits for room in wax\n"));
+    CHECK(strstr(g, "  car #4   on tunnel post 2   -> waits for room in wax\n"));
+    CHECK(strstr(g, "    wax: 0 posts                <- ROOT CAUSE: stage wax has no posts\n"));
+    CHECK(strstr(g, "  car #5   on prewash post 1  -> waits for room in tunnel\n"));
+    CHECK(strstr(g, "  car #6   in tunnel queue    -> waits for a post in tunnel\n"));
+    CHECK(strstr(g, "    tunnel: 2/2 posts held by car #3, car #4 (both blocked), queue 2/2\n"));
+    const char *wax = strstr(g, "wax: 0 posts"), *c5 = strstr(g, "car #5 ");
+    CHECK(wax && c5 && wax < c5);  // сначала то, что ближе к корню (дальше по линии)
+    int roots = 0;
+    for (const char *p = strstr(g, "ROOT CAUSE"); p; p = strstr(p + 1, "ROOT CAUSE")) {
+        ++roots;
+    }
+    CHECK(roots == 1);  // корень назван один раз
+    LineFree(l);
+}
+
+static void TestWaitGraphBroken(void) {
+    LoadLineCfg(DEAD_CFG);
+    Line *l = OpenLine();
+    SetRepair(l, S_DRY, 0, 6);
+    SetRepair(l, S_DRY, 1, 4);
+    CHECK(Enter(l, S_DRY, NewCar(l, P_EXPRESS)) == ADMIT_QUEUE);
+    const char *g = Capture(WaitGraphPrint, l);
+    CHECK(strstr(g, "(1 car(s) stuck)"));
+    CHECK(strstr(g, "  car #1   in dry queue       -> waits for a post in dry\n"));
+    CHECK(strstr(g, "    dry: 2/2 posts broken       <- ROOT CAUSE: all dry posts are broken "
+                    "(repair 4 min)\n"));
+    LineFree(l);
+}
+
+static void TestWaitGraphDot(void) {
+    Line *l = StuckLine();
+    char path[] = "/tmp/cwmon-dot-XXXXXX";
+    int fd = mkstemp(path);
+    CHECK(fd >= 0);
+    close(fd);
+    CHECK(WaitGraphDot(l, path) == 0);
+    int in = open(path, O_RDONLY);
+    char buf[4096] = "";
+    ssize_t n = read(in, buf, sizeof buf - 1);
+    buf[n > 0 ? n : 0] = '\0';
+    close(in);
+    unlink(path);
+    CHECK(strncmp(buf, "digraph", 7) == 0);
+    CHECK(strstr(buf, "\"car #3\" -> \"stage wax\""));
+    CHECK(strstr(buf, "\"stage tunnel\" -> \"car #3\""));
+    CHECK(strstr(buf, "ROOT CAUSE"));
+    CHECK(WaitGraphDot(l, "/nonexistent/dir/g.dot") == -1);
+    LineFree(l);
+}
+
+static void TestThreadTable(void) {
+    Line *l = StuckLine();
+    const char *t = Capture(PrintThreads, l);
+    CHECK(strncmp(t, "THREADS", 7) == 0);
+    CHECK(strstr(t, "coordinator"));
+    CHECK(strstr(t, "post tunnel.1"));
+    CHECK(strstr(t, "car #7"));
+    LineFree(l);
+}
+
+/// Состояние потока машины, как будто она ждёт в SimWaitOn с такой причиной.
+static void ParkCar(Car *car, WaitKind kind, int stage) {
+    car->th.state = ST_PARKED;
+    car->th.why = (WaitReason){.kind = kind, .stage = stage, .post = 0};
+}
+
+/// Все машины снова «завершены»: иначе LineFree не даст уничтожить их потоки.
+static void UnparkCars(Line *l) {
+    int next = 0;
+    for (Car *c = LineCar(l, next); c != NULL; c = LineCar(l, next)) {
+        c->th.state = ST_DONE;
+        next = c->id + 1;
+    }
+}
+
+static void TestSnapshotPanel(void) {
+    Line *l = StuckLine();  // #1, #2 в очереди wax; #3, #4 заблокированы на tunnel; #5 на prewash
+    ParkCar(LineCar(l, 0), WAIT_QUEUE, S_WAX);
+    ParkCar(LineCar(l, 2), WAIT_ROOM, S_WAX);
+    ParkCar(LineCar(l, 3), WAIT_ROOM, S_WAX);
+    ParkCar(LineCar(l, 4), WAIT_ROOM, S_TUNNEL);
+    LineCar(l, 1)->th.state = ST_SLEEPING;
+    Snapshot s;
+    SnapshotTake(l, &s);
+    CHECK(s.threads[TH_CAR] == 5);
+    CHECK(s.phase[TH_CAR][PH_ROOM] == 3);
+    CHECK(s.phase[TH_CAR][PH_QUEUE] == 1);
+    CHECK(s.phase[TH_CAR][PH_SLEEP] == 1);
+    CHECK(s.panelCars == 4);
+    CHECK(s.panel[0].car == 0 && s.panel[0].why == WAIT_QUEUE);  // по возрастанию номера
+    CHECK(s.panel[1].car == 2 && s.panel[1].why == WAIT_ROOM && s.panel[1].stage == S_WAX);
+    CHECK(s.queueProg[S_WAX][0] == P_PREMIUM);
+    CHECK(s.arrived == 7 && s.queued[S_TUNNEL] == 2);
+
+    // тесно: панель на PANEL_CARS мест, машины с WAIT_ROOM вытесняют ждущих в очереди
+    for (int i = 0; i < 10; ++i) {
+        ParkCar(NewCar(l, P_EXPRESS), WAIT_QUEUE, S_TUNNEL);
+    }
+    ParkCar(NewCar(l, P_EXPRESS), WAIT_ROOM, S_DRY);
+    SnapshotTake(l, &s);
+    int rooms = 0;
+    for (int i = 0; i < s.panelCars; ++i) {
+        rooms += s.panel[i].why == WAIT_ROOM;
+    }
+    CHECK(s.panelCars == PANEL_CARS);
+    CHECK(rooms == 4);  // все четыре заблокированные видны
+    UnparkCars(l);
+    LineFree(l);
+}
+
+// ---- Аудитор: события подаются прямо в AuditorListener, без шины ----
+
+static Config auditCfg;
+static int auditNull = -1;  ///< /dev/null: сообщения о нарушениях в тестах не нужны
+
+/// Свежий аудитор на линии «a (1 пост, очередь 1) -> b (1 пост ёмкостью 2, очередь 1)».
+static void AuditStart(void) {
+    char err[256];
+    ConfigDefaults(&auditCfg);
+    CHECK(ConfigParseText(&auditCfg,
+                          "stage = a 1 1 2 1\nstage = b 1 1 2 1 2\nprogram = P 1 1 a b\n", err,
+                          sizeof err) == 0);
+    if (auditNull < 0) {
+        auditNull = open("/dev/null", O_WRONLY);
+    }
+    AuditorInit(auditNull, &auditCfg);
+}
+
+static void Feed(EventType type, int car, int stage, int post, int arg) {
+    Event e = {.type = type, .car = car, .stage = stage, .post = post, .program = 0, .arg = arg};
+    AuditorListener(&e);
+}
+
+/// Машина приезжает и садится на пост a.
+static void FeedArriveOnA(int car) {
+    Feed(EV_ARRIVE, car, -1, -1, 0);
+    Feed(EV_PROGRAM, car, -1, -1, 0);
+    Feed(EV_ENTER, car, 0, 0, 0);
+    Feed(EV_OP_START, car, 0, 0, 1);
+}
+
+static void TestAuditorCleanRun(void) {
+    AuditStart();
+    FeedArriveOnA(0);
+    Feed(EV_OP_END, 0, 0, 0, 0);
+    Feed(EV_LEAVE, 0, 0, 0, 0);
+    // между LEAVE и MOVE машины 0 на освободившийся пост садится машина 1 из очереди
+    Feed(EV_ARRIVE, 1, -1, -1, 0);
+    Feed(EV_PROGRAM, 1, -1, -1, 0);
+    Feed(EV_QUEUE, 1, 0, -1, 1);
+    Feed(EV_ENTER, 1, 0, 0, 0);
+    Feed(EV_OP_START, 1, 0, 0, 1);
+    Feed(EV_MOVE, 0, 1, -1, 0);
+    Feed(EV_ENTER, 0, 1, 0, 0);
+    Feed(EV_OP_START, 0, 1, 0, 1);
+    Feed(EV_LEAVE, 1, 0, 0, 0);
+    Feed(EV_MOVE, 1, 1, -1, 0);
+    Feed(EV_ENTER, 1, 1, 0, 0);  // ёмкость b - 2: вторая машина на том же посту законна
+    Feed(EV_OP_START, 1, 1, 0, 1);
+    Feed(EV_LEAVE, 0, 1, 0, 0);
+    Feed(EV_DONE, 0, 1, -1, 5);
+    Feed(EV_ARRIVE, 2, -1, -1, 0);
+    Feed(EV_REJECT, 2, 0, -1, 1);
+    CHECK(AuditorViolations() == 0);
+    CHECK(AuditorChecks() == 22);
+}
+
+static void TestAuditorCapacity(void) {
+    AuditStart();
+    FeedArriveOnA(0);
+    FeedArriveOnA(1);  // у поста a ёмкость 1
+    CHECK(AuditorViolations() == 1);
+}
+
+static void TestAuditorTwoPlaces(void) {
+    AuditStart();
+    FeedArriveOnA(0);
+    Feed(EV_MOVE, 0, 1, -1, 0);  // переезд без EV_LEAVE: машина всё ещё на посту a
+    CHECK(AuditorViolations() == 1);
+
+    AuditStart();
+    FeedArriveOnA(0);
+    Feed(EV_LEAVE, 0, 0, 0, 0);
+    Feed(EV_QUEUE, 0, 1, -1, 1);  // в очередь b без EV_MOVE
+    CHECK(AuditorViolations() == 1);
+
+    AuditStart();
+    FeedArriveOnA(0);
+    Feed(EV_LEAVE, 0, 0, 0, 0);
+    Feed(EV_LEAVE, 0, 0, 0, 0);  // второй раз с того же поста
+    CHECK(AuditorViolations() == 1);
+}
+
+static void TestAuditorRoute(void) {
+    AuditStart();
+    Feed(EV_ARRIVE, 0, -1, -1, 0);
+    Feed(EV_PROGRAM, 0, -1, -1, 0);
+    Feed(EV_ENTER, 0, 1, 0, 0);  // маршрут начинается с a
+    CHECK(AuditorViolations() == 1);
+
+    AuditStart();
+    FeedArriveOnA(0);
+    Feed(EV_LEAVE, 0, 0, 0, 0);
+    Feed(EV_DONE, 0, 0, -1, 3);  // уехала, пройдя 1 стадию из 2
+    CHECK(AuditorViolations() == 1);
+}
+
+static void TestAuditorBrokenPost(void) {
+    AuditStart();
+    Feed(EV_FAIL, -1, 0, 0, 5);
+    FeedArriveOnA(0);  // операция на сломанном посту
+    CHECK(AuditorViolations() == 1);
+
+    AuditStart();
+    Feed(EV_FAIL, -1, 0, 0, 5);
+    Feed(EV_REPAIR, -1, 0, 0, 0);
+    FeedArriveOnA(0);
+    CHECK(AuditorViolations() == 0);
+}
+
+static void TestAuditorQueue(void) {
+    AuditStart();
+    for (int car = 0; car < 2; ++car) {
+        Feed(EV_ARRIVE, car, -1, -1, 0);
+        Feed(EV_PROGRAM, car, -1, -1, 0);
+        Feed(EV_QUEUE, car, 0, -1, car + 1);  // очередь a вмещает одну машину
+    }
+    CHECK(AuditorViolations() == 1);
+    AuditorFree();
+}
+
+/// Код выхода: нарушение (аудитор, LOCKDEP или SOFT_ASSERT) важнее исхода модели.
+static void TestExitCode(void) {
+    CHECK(LineExitCode(LINE_FINISHED, 0, 0, 0) == 0);
+    CHECK(LineExitCode(LINE_STALLED, 0, 0, 0) == 2);
+    CHECK(LineExitCode(LINE_INTERRUPTED, 0, 0, 0) == 3);
+    CHECK(LineExitCode(LINE_NO_RESOURCES, 0, 0, 0) == 5);
+    CHECK(LineExitCode(LINE_FINISHED, 1, 0, 0) == 4);
+    CHECK(LineExitCode(LINE_FINISHED, 0, 1, 0) == 4);
+    CHECK(LineExitCode(LINE_FINISHED, 0, 0, 1) == 4);  // одного SOFT_ASSERT достаточно
+    CHECK(LineExitCode(LINE_STALLED, 0, 0, 2) == 4);
+}
+
+/// Крючок выхода для TestFatalExit: метка в stdout (дочернего процесса).
+static void MarkHook(void) {
+    if (write(1, "hook\n", 5) < 0) {
+        _exit(6);  // метку не записать - тест увидит другой код выхода
+    }
+}
+
+/// FatalExit: сначала крючок выхода (вернуть терминал), затем _exit с кодом.
+static void TestFatalExit(void) {
+    int fds[2];
+    CHECK(pipe(fds) == 0);
+    fflush(NULL);  // буфер stdout родителя не должен попасть в pipe из дочернего процесса
+    pid_t pid = fork();
+    if (pid == 0) {
+        dup2(fds[1], 1);
+        LockdepSetExitHook(MarkHook);
+        FatalExit(5);
+    }
+    close(fds[1]);
+    int status = 0;
+    waitpid(pid, &status, 0);
+    char buf[16] = "";
+    ssize_t n = read(fds[0], buf, sizeof buf - 1);
+    close(fds[0]);
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 5);
+    CHECK(n >= 5 && strncmp(buf, "hook\n", 5) == 0);  // крючок отработал до выхода
+}
+
+/// Покой без спящих, а крючок сказал бы «продолжать»: разбудить некому - это тупик, а не вечное
+/// ожидание. События крючка подписаны потоком часов ("clock").
+static void TestQuiesceNobodyToWake(void) {
+    LoadLineCfg(NULL);
+    Line *l = OpenLine();
+    EventsSubscribe(SourceListener);
+    Car *a = NewCar(l, P_EXPRESS);
+    CHECK(Enter(l, S_TUNNEL, a) == ADMIT_SEAT);  // операция идёт: движение возможно
+    atomic_store(&l->open, 0);
+    atomic_store(&l->inside, 1);
+    CHECK(QuiesceHook(5, 6, l) == 1);  // есть кому проснуться - продолжаем
+    long before = SoftAssertFailures();
+    srcSeen[0] = '\0';
+    CHECK(QuiesceHook(5, -1, l) == 0);
+    CHECK(l->status == LINE_STALLED);
+    CHECK(SoftAssertFailures() == before + 1);
+    CHECK(FindEv(EV_STALL, -1) >= 0);
+    CHECK(strcmp(srcSeen, "clock") == 0);
+    EventsSetSource(NULL);
+    GanttFree();
+    LineFree(l);
+}
+
 int main(void) {
     RUN(TestStageCapacity);
     RUN(TestBadCapacity);
@@ -2040,5 +2397,19 @@ int main(void) {
     RUN(TestQueueTurnByPriority);
     RUN(TestRoomTwoFreed);
     RUN(TestWakeOnlyListed);
+    RUN(TestWaitGraphText);
+    RUN(TestWaitGraphBroken);
+    RUN(TestWaitGraphDot);
+    RUN(TestThreadTable);
+    RUN(TestSnapshotPanel);
+    RUN(TestAuditorCleanRun);
+    RUN(TestAuditorCapacity);
+    RUN(TestAuditorTwoPlaces);
+    RUN(TestAuditorRoute);
+    RUN(TestAuditorBrokenPost);
+    RUN(TestAuditorQueue);
+    RUN(TestExitCode);
+    RUN(TestFatalExit);
+    RUN(TestQuiesceNobodyToWake);
     return UnitSummary();
 }
