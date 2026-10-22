@@ -38,9 +38,8 @@ digraph threads {
   clock -> car    [style=dashed, label="запуск: личная cv"];
   clock -> post   [style=dashed, label="запуск: личная cv"];
   clock -> coord  [style=dashed, label="запуск: личная cv"];
-  post -> car     [style=dashed, label="done: конец операции"];
+  post -> car     [style=dashed, label="done: конец операции;\nпосле ремонта: seatFree / room"];
   car -> car      [style=dashed, label="seatFree / room:\nместо освободилось"];
-  post -> car     [style=dashed, label="починился:\nseatFree / room"];
   car -> coord    [style=dashed, label="decided: последняя\nмашина дня"];
   signals -> clock [style=dashed, label="SimKick"];
   clock -> render [style=dotted, label="RenderSubmit(снимок)"];
@@ -72,10 +71,16 @@ digraph threads {
 
 Освободивший место никого не выбирает. Он будит ждущих условия только тогда, когда предикат
 хоть одного из них действительно стал истинным (WakeWaiting: в очереди есть машины и есть
-свободное место на исправном посту; есть ожидающие и есть место для них). Каждый проснувшийся
+свободное место на исправном посту; есть ожидающие и есть место для них); тогда выход
+разрешают всем ждущим этого условия, а не одному. Каждый проснувшийся
 сам проверяет в цикле `while`, его ли очередь (`StageQueueTurn`, `StageRoomTurn`: лучшая по
 правилу приоритета, при равных - кто раньше встал; для ожидающих порядок - номер `ticket`).
-Лишние пробуждения безвредны: не его очередь - снова `SimWaitOn`.
+Лишние пробуждения безвредны: не его очередь - снова `SimWaitOn`. Пост по концу операции
+будит только тех, чья операция закончилась (`left == 0`).
+
+Окно отказа на входе: машина с улицы получает отказ, если кто-то ждёт места (`waiters > 0`),
+даже когда место только что освободилось, а разбуженный ожидающий его ещё не занял. Окно
+короткое и такое же, как в `carwash-mt`.
 
 @dot
 digraph stage {
@@ -88,7 +93,7 @@ digraph stage {
   wait [label="нет места: ticket = ++nextTicket,\nEV_BLOCKED; while (StageRoomTurn == RES_NONE)\nSimWaitOn(room, WAIT_ROOM)", shape=box];
   have [label="бронь есть (RES_SEAT / RES_QUEUE)"];
   vac  [label="StageVacate на текущей стадии\n(мьютекс текущей): EV_LEAVE"];
-  wk1  [label="WakeWaiting: SimGrant + CondBroadcast\nтем, у кого предикат стал истинным\n(seatFree / room текущей стадии)", style="rounded,filled", fillcolor="#e8f0fe"];
+  wk1  [label="WakeWaiting: SimGrant + CondBroadcast\nвсем ждущим условия, если предикат\nхоть одного истинен (seatFree / room)", style="rounded,filled", fillcolor="#e8f0fe"];
   com  [label="StageCommit на следующей стадии\n(мьютекс следующей): EV_MOVE,\nEV_ENTER или EV_QUEUE, EV_OP_START"];
   seat [label="Машина B из очереди проснулась:\nwhile (!StageQueueTurn) SimWaitOn(seatFree);\nсама садится на пост: EV_ENTER, EV_OP_START"];
 

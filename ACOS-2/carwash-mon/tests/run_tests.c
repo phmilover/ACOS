@@ -94,6 +94,8 @@ static pid_t StartFull(const char *name, const char *env, int in, int outFd, int
         if (in >= 0) {
             dup2(in, 0);
         }
+        signal(SIGINT, SIG_DFL);  // фоновое задание неинтерактивной оболочки наследует SIG_IGN
+        signal(SIGTERM, SIG_DFL);
         if (closeFd >= 0) {
             close(closeFd);
         }
@@ -370,6 +372,22 @@ static void TestThreadFailure(void) {
                    (const char *[]){"-c", "data/normal.cfg", NULL});
     CheckCode("thrfail1", WaitFor(pid, 5), 5);
     Expect("thrfail1", "cannot create a thread", "the reason is reported");
+    // то же в живой схеме (1 - поток отрисовки, 4 - третий пост): терминал должен вернуться
+    pid = StartEnv("thrfaillive", "CARWASH_FAIL_THREAD_AFTER=4",
+                   (const char *[]){"-c", "data/normal.cfg", "-m", "live", "-d", "0", NULL});
+    CheckCode("thrfaillive", WaitFor(pid, 5), 5);
+    Expect("thrfaillive", "cannot create a thread", "the reason is reported in live mode");
+    char livePath[256];
+    TmpPath(livePath, sizeof(livePath), "thrfaillive", "out");
+    char *liveText = ReadFile(livePath);
+    const char *lastCursor = NULL;
+    for (const char *p = liveText ? strstr(liveText, "\033[?25") : NULL; p;
+         p = strstr(p + 1, "\033[?25")) {
+        lastCursor = p;
+    }
+    Report(lastCursor && strncmp(lastCursor, "\033[?25h", 6) == 0, "thrfaillive",
+           "the cursor is shown again after the failed start");
+    free(liveText);
     // normal.cfg при старте создаёт 9 потоков: сигналы, посты (1+2+1+2=6), координатор, часы -
     // вызовы ThreadCreate с номерами 0..8. N = 13: машины 9..12 создаются, а на пятой машине
     // поток не создаётся - ошибка приходит, когда потоки машин уже работают, и программа должна

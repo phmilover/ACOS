@@ -189,7 +189,7 @@ static int StartParticipants(const Config *cfg) {
 /// недостающего нельзя - выходим сразу, без итогов.
 _Noreturn static void StartFailed(void) {
     dprintf(2, "carwash-mon: not enough resources: cannot create a thread\n");
-    exit(5);  // NOLINT(concurrency-mt-unsafe): остальные потоки модели ещё на барьере
+    FatalExit(5);  // остальные потоки модели ещё на барьере; хук возвращает терминал
 }
 
 /// Создаёт поток модели (SimSpawned до ThreadCreate) или выходит с кодом 5.

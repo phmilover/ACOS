@@ -143,6 +143,7 @@ int SimThreadInit(SimThread *t, ThreadKind kind, int id, const char *name, int o
         return -1;
     }
     MutexLock(&mu);
+    t->live = 1;
     if (allTail) {
         allTail->nextAll = t;
     } else {
@@ -155,6 +156,11 @@ int SimThreadInit(SimThread *t, ThreadKind kind, int id, const char *name, int o
 
 void SimThreadDestroy(SimThread *t) {
     MutexLock(&mu);
+    if (!t->live) {
+        MutexUnlock(&mu);
+        return;  // уже уничтожен (Reap, затем LineFree): cond второй раз не уничтожаем
+    }
+    t->live = 0;
     SOFT_ASSERT(t->state == ST_DONE, "SimThreadDestroy of a live thread");
     SimThread *prev = NULL;
     for (SimThread *p = allHead; p; prev = p, p = p->nextAll) {
@@ -386,7 +392,8 @@ static long MonotonicMs(void) {
 }
 
 /// Задержка темпа показа на условной переменной часов кусками по DELAY_CHUNK_MS: её прерывают
-/// SimKick и SimStop, а куски страхуют от скачков системного времени.
+/// SimKick и SimStop. Остаток считается по монотонным часам, но сам CondTimedWaitMs берёт срок
+/// от CLOCK_REALTIME: скачок времени назад внутри куска растянет этот кусок, не больше.
 /// @return 1, если задержку прервал SimKick (крючок надо вызвать снова), иначе 0
 static int Delay(int ms) {
     long end = MonotonicMs() + ms;

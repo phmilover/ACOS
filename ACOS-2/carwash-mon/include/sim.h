@@ -66,6 +66,7 @@ typedef struct SimThread {
     int granted;           ///< под waitMutex: SimGrant разрешил выйти из SimWaitOn
     long parks;            ///< сколько раз вызывал SimWaitOn
     long sysId;            ///< системный номер потока (ставит SimBegin), 0 - неизвестен
+    int live;              ///< под мьютексом часов: cv создана и ещё не уничтожена
     struct SimThread *nextAll, *nextReady;
 } SimThread;
 
@@ -101,7 +102,7 @@ int SimInit(const SimOptions *o);
 int SimThreadInit(SimThread *t, ThreadKind kind, int id, const char *name, int order);
 
 /// Снимает регистрацию и уничтожает условную переменную. Поток должен быть в ST_DONE
-/// (собран). Звать ровно один раз на успешный SimThreadInit.
+/// (собран). Повторный вызов для того же потока ничего не делает.
 void SimThreadDestroy(SimThread *t);
 
 /// Зовёт создатель до ThreadCreate: поток встаёт в очередь запуска (в обычном режиме сразу

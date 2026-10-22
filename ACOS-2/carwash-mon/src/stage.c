@@ -188,8 +188,8 @@ static void WakeWaiting(Line *l, Stage *st) REQUIRES(st->m) {
 void StageWakePost(Stage *st, Post *post) {
     for (int k = 0; k < post->capacity; ++k) {
         const Seat *seat = &post->seat[k];
-        if (seat->car < 0 || seat->left < 0) {
-            continue;  // свободно или бронь: машина ещё не заехала
+        if (seat->car < 0 || seat->left != 0) {
+            continue;  // свободно, бронь или операция идёт: ту машину разбудит конец её операции
         }
         Car *car = LineCar(post->line, seat->car);
         if (SOFT_ASSERT(car != NULL, "unknown car on a post")) {

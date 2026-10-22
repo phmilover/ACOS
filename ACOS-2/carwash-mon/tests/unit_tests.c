@@ -1810,9 +1810,10 @@ static int StageHook(int now, int nextWake, void *ctx) {
     return nextWake != -1;
 }
 
-typedef enum { ACT_SEAT, ACT_RESERVE, ACT_DRIVER } ActKind;
+typedef enum { ACT_SEAT, ACT_RESERVE, ACT_DRIVER, ACT_OPERATION } ActKind;
 
-/// Поток теста. ACT_SEAT - машина очереди (StageAwaitSeat), ACT_RESERVE - машина с поста стадии
+/// Поток теста. ACT_OPERATION - машина на посту ждёт конца операции (StageAwaitOperation),
+/// ACT_SEAT - машина очереди (StageAwaitSeat), ACT_RESERVE - машина с поста стадии
 /// from ждёт места (StageReserve), ACT_DRIVER - в минуту 1 делает act.
 typedef struct {
     ActKind kind;
@@ -1841,8 +1842,13 @@ static void *ActorMain(void *arg) {
         } else {
             Stage *st = &line.stage[a->stage];
             MutexLock(&st->m);
-            a->got = a->kind == ACT_SEAT ? StageAwaitSeat(&line, st, a->car)
-                                         : StageReserve(&line, st, a->car, a->from, 0);
+            if (a->kind == ACT_OPERATION) {
+                a->got = StageAwaitOperation(&line, st, a->car);
+            } else if (a->kind == ACT_SEAT) {
+                a->got = StageAwaitSeat(&line, st, a->car);
+            } else {
+                a->got = StageReserve(&line, st, a->car, a->from, 0);
+            }
             if (a->got == SIM_OK) {
                 a->doneAt = SimNow();
             }
@@ -1999,6 +2005,61 @@ static void TestWakeOnlyListed(void) {
         }
         LineFree(l);
     }
+}
+
+/// Водитель: у машины actCars[0] операция кончилась (left = 0), пост будит сидящих.
+static void EndOperationOfFirst(Line *l) {
+    Stage *st = &l->stage[S_DRY];
+    MutexLock(&st->m);
+    Post *post = &st->post[actCars[0]->post];
+    post->seat[actCars[0]->seat].left = 0;
+    StageWakePost(st, post);
+    MutexUnlock(&st->m);
+}
+
+/// Пост сушки на две машины: одна закончила, у другой операция ещё идёт. Просыпается только
+/// закончившая; вторая не получает разрешения и спит ровно одну парковку (не будится зря).
+static void TestWakePostSkipsBusy(void) {
+    for (int det = 1; det >= 0; --det) {
+        LoadLineCfg(CAPACITY_CFG);
+        StageHookLog h = {0};
+        SimOptions o = {.deterministic = det, .hook = StageHook, .ctx = &h};
+        Line *l = OpenLineWith(&o);
+        Car *a = NewCar(l, P_EXPRESS), *b = NewCar(l, P_EXPRESS);
+        CHECK(Enter(l, S_DRY, a) == ADMIT_SEAT && Enter(l, S_DRY, b) == ADMIT_SEAT);
+        CHECK(l->stage[S_DRY].post[b->post].seat[b->seat].left > 0);
+        actCars[0] = a;
+        h.watch = &b->th;
+        Actor act[3] = {{.kind = ACT_OPERATION, .car = a, .stage = S_DRY},
+                        {.kind = ACT_OPERATION, .car = b, .stage = S_DRY},
+                        {.kind = ACT_DRIVER, .act = EndOperationOfFirst}};
+        RunActors(act, 3);
+        CHECK(act[0].got == SIM_OK && act[0].doneAt == 1);
+        CHECK(act[1].got == SIM_STOP && act[1].doneAt == -1);
+        CHECK(h.watchState == ST_PARKED && h.watchParks == 1);
+        LineFree(l);
+    }
+}
+
+static void CountThreads(const SimThread *t, void *ctx) {
+    (void)t;
+    ++*(int *)ctx;
+}
+
+/// SimThreadDestroy идемпотентен: Reap уничтожает машину, затем LineFree зовёт его снова.
+static void TestThreadDestroyTwice(void) {
+    SimOptions o = {0};
+    CHECK(SimInit(&o) == 0);
+    SimThread t;
+    CHECK(SimThreadInit(&t, TH_CAR, 1, "car", 0) == 0);
+    CHECK(t.live == 1);
+    SimThreadDestroy(&t);
+    CHECK(t.live == 0);
+    SimThreadDestroy(&t);  // cond второй раз не уничтожается
+    CHECK(t.live == 0);
+    int seen = 0;
+    SimForEach(CountThreads, &seen);
+    CHECK(seen == 0);
 }
 
 // ---- Граф ожидания, таблица потоков, снимок ----
@@ -2525,6 +2586,8 @@ int main(void) {
     RUN(TestQueueTurnByPriority);
     RUN(TestRoomTwoFreed);
     RUN(TestWakeOnlyListed);
+    RUN(TestWakePostSkipsBusy);
+    RUN(TestThreadDestroyTwice);
     RUN(TestWaitGraphText);
     RUN(TestWaitGraphBroken);
     RUN(TestWaitGraphDot);
