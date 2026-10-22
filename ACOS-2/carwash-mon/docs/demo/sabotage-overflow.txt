@@ -1,0 +1,717 @@
+$ bin/carwash-mon -m log -x overflow -s 3 -d 0
+=== AUTOMATIC CAR WASH: simulation of one working day ===
+Stages:
+  prewash   posts 1, operation 3-5 min, queue 3
+  tunnel    posts 2, operation 6-9 min, queue 2
+  wax       posts 1, operation 4-6 min, queue 2
+  dry       posts 2, operation 3-5 min, queue 3
+Programs:
+  Express   weight 40, priority 1, route: tunnel > dry
+  Standard  weight 40, priority 2, route: prewash > tunnel > dry
+  Premium   weight 20, priority 3, route: prewash > tunnel > wax > dry
+Cars: 40, arrival every 2-6 min, working day: 240 min
+Failures: p=0.010 per post per minute, repair 5-15 min
+Priority rule: fifo, seed: 3
+Mode: threads in parallel
+
+[08:00] car #1 arrives at the entrance
+[08:00] car #1 chooses Premium (prewash > tunnel > wax > dry)
+[08:00] car #1 enters prewash post 1
+[08:00] prewash post 1 starts on car #1 Premium (5 min)
+[08:02] car #2 arrives at the entrance
+[08:02] car #2 chooses Premium (prewash > tunnel > wax > dry)
+[08:02] car #2 waits in prewash queue (1/3)
+[08:04] dry post 1 BREAKS DOWN (repair 9 min)
+[08:04] car #3 arrives at the entrance
+[08:04] car #3 chooses Standard (prewash > tunnel > dry)
+[08:04] car #3 waits in prewash queue (2/3)
+[08:05] prewash post 1 finished car #1
+[08:05] car #1 leaves prewash post 1
+[08:05] car #1 moves prewash -> tunnel
+[08:05] car #1 enters tunnel post 1
+[08:05] tunnel post 1 starts on car #1 Premium (9 min)
+[08:05] car #2 enters prewash post 1
+[08:05] prewash post 1 starts on car #2 Premium (3 min)
+[08:06] car #4 arrives at the entrance
+[08:06] car #4 chooses Express (tunnel > dry)
+[08:06] car #4 waits in tunnel queue (1/2)
+[08:08] prewash post 1 finished car #2
+[08:08] car #2 leaves prewash post 1
+[08:08] car #2 moves prewash -> tunnel
+[08:08] car #2 waits in tunnel queue (2/2)
+[08:08] car #3 enters prewash post 1
+[08:08] prewash post 1 starts on car #3 Standard (3 min)
+[08:09] car #5 arrives at the entrance
+[08:09] car #5 chooses Express (tunnel > dry)
+carwash-mon: soft assert failed: st->queued < l->cfg->stage[s].queue (no room in the queue), stage.c:370 in StageCommit()
+[08:09] car #5 waits in tunnel queue (3/2)
+AUDITOR: [08:09] I5 violated (queue capacity is not exceeded): tunnel queue holds 3 cars, capacity is 2
+[08:11] prewash post 1 finished car #3
+[08:11] car #3 waits on prewash post 1: tunnel is full
+[08:13] dry post 1 is repaired and back in service
+[08:14] tunnel post 1 finished car #1
+[08:14] car #1 leaves tunnel post 1
+[08:14] car #1 moves tunnel -> wax
+[08:14] car #1 enters wax post 1
+[08:14] wax post 1 starts on car #1 Premium (6 min)
+[08:14] car #4 enters tunnel post 1
+[08:14] tunnel post 1 starts on car #4 Express (7 min)
+[08:14] car #3 leaves prewash post 1
+[08:14] car #3 moves prewash -> tunnel
+carwash-mon: soft assert failed: st->queued < l->cfg->stage[s].queue (no room in the queue), stage.c:370 in StageCommit()
+[08:14] car #3 waits in tunnel queue (3/2)
+[08:15] car #6 arrives at the entrance
+[08:15] car #6 chooses Express (tunnel > dry)
+[08:15] car #6 turned away: tunnel queue is full (3/2)
+[08:20] wax post 1 finished car #1
+[08:20] car #1 leaves wax post 1
+[08:20] car #1 moves wax -> dry
+[08:20] car #1 enters dry post 1
+[08:20] dry post 1 starts on car #1 Premium (4 min)
+[08:21] tunnel post 1 finished car #4
+[08:21] car #4 leaves tunnel post 1
+[08:21] car #7 arrives at the entrance
+[08:21] car #7 chooses Standard (prewash > tunnel > dry)
+[08:21] car #7 enters prewash post 1
+[08:21] prewash post 1 starts on car #7 Standard (3 min)
+[08:21] car #2 enters tunnel post 1
+[08:21] tunnel post 1 starts on car #2 Premium (9 min)
+[08:21] car #4 moves tunnel -> dry
+[08:21] car #4 waits in dry queue (1/3)
+[08:24] dry post 1 finished car #1
+[08:24] prewash post 1 finished car #7
+[08:24] car #1 leaves dry post 1
+[08:24] car #1 is clean! Premium done in 24 min, drives away
+[08:24] car #7 leaves prewash post 1
+[08:24] car #7 moves prewash -> tunnel
+carwash-mon: soft assert failed: st->queued < l->cfg->stage[s].queue (no room in the queue), stage.c:370 in StageCommit()
+[08:24] car #4 enters dry post 1
+[08:24] dry post 1 starts on car #4 Express (5 min)
+[08:24] car #7 waits in tunnel queue (3/2)
+[08:27] car #8 arrives at the entrance
+[08:27] car #8 chooses Express (tunnel > dry)
+[08:27] car #8 turned away: tunnel queue is full (3/2)
+[08:29] dry post 1 finished car #4
+[08:29] car #4 leaves dry post 1
+[08:29] car #4 is clean! Express done in 23 min, drives away
+[08:30] tunnel post 1 finished car #2
+[08:30] car #2 leaves tunnel post 1
+[08:30] car #2 moves tunnel -> wax
+[08:30] car #2 enters wax post 1
+[08:30] wax post 1 starts on car #2 Premium (6 min)
+[08:30] car #5 enters tunnel post 1
+[08:30] tunnel post 1 starts on car #5 Express (8 min)
+[08:31] dry post 2 BREAKS DOWN (repair 10 min)
+[08:33] car #9 arrives at the entrance
+[08:33] car #9 chooses Premium (prewash > tunnel > wax > dry)
+[08:33] car #9 enters prewash post 1
+[08:33] prewash post 1 starts on car #9 Premium (3 min)
+[08:36] wax post 1 finished car #2
+[08:36] prewash post 1 finished car #9
+[08:36] car #2 leaves wax post 1
+[08:36] car #2 moves wax -> dry
+[08:36] car #2 enters dry post 1
+[08:36] dry post 1 starts on car #2 Premium (4 min)
+[08:36] car #9 leaves prewash post 1
+[08:36] car #9 moves prewash -> tunnel
+carwash-mon: soft assert failed: st->queued < l->cfg->stage[s].queue (no room in the queue), stage.c:370 in StageCommit()
+[08:36] car #9 waits in tunnel queue (3/2)
+[08:38] tunnel post 1 BREAKS DOWN with car #5 on it (repair 12 min)
+[08:38] car #10 arrives at the entrance
+[08:38] car #10 chooses Standard (prewash > tunnel > dry)
+[08:38] car #10 enters prewash post 1
+[08:38] prewash post 1 starts on car #10 Standard (5 min)
+[08:40] dry post 1 finished car #2
+[08:40] car #11 arrives at the entrance
+[08:40] car #11 chooses Premium (prewash > tunnel > wax > dry)
+[08:40] car #11 waits in prewash queue (1/3)
+[08:40] car #2 leaves dry post 1
+[08:40] car #2 is clean! Premium done in 38 min, drives away
+[08:41] dry post 2 is repaired and back in service
+[08:43] prewash post 1 finished car #10
+[08:43] car #10 waits on prewash post 1: tunnel is full
+[08:46] car #12 arrives at the entrance
+[08:46] car #12 chooses Express (tunnel > dry)
+[08:46] car #12 turned away: tunnel queue is full (3/2)
+[08:48] car #13 arrives at the entrance
+[08:48] car #13 chooses Premium (prewash > tunnel > wax > dry)
+[08:48] car #13 waits in prewash queue (2/3)
+[08:50] tunnel post 1 is repaired and back in service
+[08:50] tunnel post 1 finished car #5
+[08:50] car #5 leaves tunnel post 1
+[08:50] car #5 moves tunnel -> dry
+[08:50] car #5 enters dry post 1
+[08:50] dry post 1 starts on car #5 Express (5 min)
+[08:50] car #3 enters tunnel post 1
+[08:50] tunnel post 1 starts on car #3 Standard (7 min)
+[08:50] car #10 leaves prewash post 1
+[08:50] car #10 moves prewash -> tunnel
+carwash-mon: soft assert failed: st->queued < l->cfg->stage[s].queue (no room in the queue), stage.c:370 in StageCommit()
+[08:50] car #10 waits in tunnel queue (3/2)
+[08:50] car #11 enters prewash post 1
+[08:50] prewash post 1 starts on car #11 Premium (3 min)
+[08:51] prewash post 1 BREAKS DOWN with car #11 on it (repair 5 min)
+[08:53] dry post 2 BREAKS DOWN (repair 6 min)
+[08:53] car #14 arrives at the entrance
+[08:53] car #14 chooses Standard (prewash > tunnel > dry)
+[08:53] car #14 waits in prewash queue (2/3)
+[08:55] dry post 1 finished car #5
+[08:55] car #5 leaves dry post 1
+[08:55] car #5 is clean! Express done in 46 min, drives away
+[08:56] prewash post 1 is repaired and back in service
+[08:57] tunnel post 1 finished car #3
+[08:57] car #3 leaves tunnel post 1
+[08:57] car #3 moves tunnel -> dry
+[08:57] car #3 enters dry post 1
+[08:57] dry post 1 starts on car #3 Standard (5 min)
+[08:57] car #15 arrives at the entrance
+[08:57] car #15 chooses Express (tunnel > dry)
+[08:57] car #7 enters tunnel post 1
+[08:57] tunnel post 1 starts on car #7 Standard (6 min)
+carwash-mon: soft assert failed: st->queued < l->cfg->stage[s].queue (no room in the queue), stage.c:370 in StageCommit()
+[08:57] car #15 waits in tunnel queue (3/2)
+[08:58] prewash post 1 finished car #11
+[08:58] car #11 waits on prewash post 1: tunnel is full
+[08:59] tunnel post 2 BREAKS DOWN (repair 13 min)
+[08:59] dry post 2 is repaired and back in service
+[09:01] car #16 arrives at the entrance
+[09:01] car #16 chooses Premium (prewash > tunnel > wax > dry)
+[09:01] car #16 waits in prewash queue (3/3)
+[09:02] dry post 1 finished car #3
+[09:02] car #3 leaves dry post 1
+[09:02] car #3 is clean! Standard done in 58 min, drives away
+[09:03] tunnel post 1 finished car #7
+[09:03] car #7 leaves tunnel post 1
+[09:03] car #7 moves tunnel -> dry
+[09:03] car #7 enters dry post 1
+[09:03] dry post 1 starts on car #7 Standard (3 min)
+[09:03] car #9 enters tunnel post 1
+[09:03] tunnel post 1 starts on car #9 Premium (8 min)
+[09:03] car #11 leaves prewash post 1
+[09:03] car #11 moves prewash -> tunnel
+carwash-mon: soft assert failed: st->queued < l->cfg->stage[s].queue (no room in the queue), stage.c:370 in StageCommit()
+[09:03] car #11 waits in tunnel queue (3/2)
+[09:03] car #13 enters prewash post 1
+[09:03] prewash post 1 starts on car #13 Premium (4 min)
+[09:06] dry post 1 finished car #7
+[09:06] car #7 leaves dry post 1
+[09:06] car #7 is clean! Standard done in 45 min, drives away
+[09:06] car #17 arrives at the entrance
+[09:06] car #17 chooses Standard (prewash > tunnel > dry)
+[09:06] car #17 waits in prewash queue (3/3)
+[09:07] prewash post 1 finished car #13
+[09:07] car #13 waits on prewash post 1: tunnel is full
+[09:11] tunnel post 1 finished car #9
+[09:11] car #9 leaves tunnel post 1
+[09:11] car #9 moves tunnel -> wax
+[09:11] car #9 enters wax post 1
+[09:11] wax post 1 starts on car #9 Premium (4 min)
+[09:11] car #10 enters tunnel post 1
+[09:11] tunnel post 1 starts on car #10 Standard (7 min)
+[09:11] car #13 leaves prewash post 1
+[09:11] car #13 moves prewash -> tunnel
+[09:11] car #14 enters prewash post 1
+[09:11] prewash post 1 starts on car #14 Standard (5 min)
+carwash-mon: soft assert failed: st->queued < l->cfg->stage[s].queue (no room in the queue), stage.c:370 in StageCommit()
+[09:11] car #13 waits in tunnel queue (3/2)
+[09:12] tunnel post 2 is repaired and back in service
+[09:12] car #18 arrives at the entrance
+[09:12] car #18 chooses Standard (prewash > tunnel > dry)
+[09:12] car #18 waits in prewash queue (3/3)
+[09:15] wax post 1 finished car #9
+[09:15] car #9 leaves wax post 1
+[09:15] car #9 moves wax -> dry
+[09:15] car #9 enters dry post 1
+[09:15] dry post 1 starts on car #9 Premium (5 min)
+[09:16] dry post 2 BREAKS DOWN (repair 8 min)
+[09:16] prewash post 1 finished car #14
+[09:16] car #14 waits on prewash post 1: tunnel is full
+[09:17] car #19 arrives at the entrance
+[09:17] car #19 chooses Standard (prewash > tunnel > dry)
+carwash-mon: soft assert failed: st->queued < l->cfg->stage[s].queue (no room in the queue), stage.c:370 in StageCommit()
+[09:17] car #19 waits in prewash queue (4/3)
+AUDITOR: [09:17] I5 violated (queue capacity is not exceeded): prewash queue holds 4 cars, capacity is 3
+[09:18] tunnel post 1 finished car #10
+[09:18] car #10 leaves tunnel post 1
+[09:18] car #10 moves tunnel -> dry
+[09:18] car #10 waits in dry queue (1/3)
+[09:18] car #15 enters tunnel post 1
+[09:18] tunnel post 1 starts on car #15 Express (6 min)
+[09:18] car #14 leaves prewash post 1
+[09:18] car #14 moves prewash -> tunnel
+carwash-mon: soft assert failed: st->queued < l->cfg->stage[s].queue (no room in the queue), stage.c:370 in StageCommit()
+[09:18] car #16 enters prewash post 1
+[09:18] prewash post 1 starts on car #16 Premium (4 min)
+[09:18] car #14 waits in tunnel queue (3/2)
+[09:20] dry post 1 finished car #9
+[09:20] car #9 leaves dry post 1
+[09:20] car #9 is clean! Premium done in 47 min, drives away
+[09:20] car #10 enters dry post 1
+[09:20] dry post 1 starts on car #10 Standard (5 min)
+[09:21] car #20 arrives at the entrance
+[09:21] car #20 chooses Premium (prewash > tunnel > wax > dry)
+carwash-mon: soft assert failed: st->queued < l->cfg->stage[s].queue (no room in the queue), stage.c:370 in StageCommit()
+[09:21] car #20 waits in prewash queue (4/3)
+[09:22] prewash post 1 finished car #16
+[09:22] car #16 waits on prewash post 1: tunnel is full
+[09:24] tunnel post 1 finished car #15
+[09:24] dry post 2 is repaired and back in service
+[09:24] car #15 leaves tunnel post 1
+[09:24] car #15 moves tunnel -> dry
+[09:24] car #11 enters tunnel post 1
+[09:24] tunnel post 1 starts on car #11 Premium (7 min)
+[09:24] car #15 waits in dry queue (1/3)
+[09:24] car #16 leaves prewash post 1
+[09:24] car #16 moves prewash -> tunnel
+carwash-mon: soft assert failed: st->queued < l->cfg->stage[s].queue (no room in the queue), stage.c:370 in StageCommit()
+[09:24] car #17 enters prewash post 1
+[09:24] prewash post 1 starts on car #17 Standard (4 min)
+[09:24] car #16 waits in tunnel queue (3/2)
+[09:25] dry post 1 finished car #10
+[09:25] car #10 leaves dry post 1
+[09:25] car #10 is clean! Standard done in 47 min, drives away
+[09:25] car #15 enters dry post 1
+[09:25] dry post 1 starts on car #15 Express (5 min)
+[09:27] car #21 arrives at the entrance
+[09:27] car #21 chooses Express (tunnel > dry)
+[09:27] car #21 turned away: tunnel queue is full (3/2)
+[09:28] prewash post 1 finished car #17
+[09:28] car #17 waits on prewash post 1: tunnel is full
+[09:30] dry post 1 finished car #15
+[09:30] car #15 leaves dry post 1
+[09:30] car #15 is clean! Express done in 33 min, drives away
+[09:31] tunnel post 1 finished car #11
+[09:31] car #11 leaves tunnel post 1
+[09:31] car #11 moves tunnel -> wax
+[09:31] car #11 enters wax post 1
+[09:31] wax post 1 starts on car #11 Premium (6 min)
+[09:31] car #13 enters tunnel post 1
+[09:31] tunnel post 1 starts on car #13 Premium (8 min)
+[09:31] car #17 leaves prewash post 1
+[09:31] car #17 moves prewash -> tunnel
+carwash-mon: soft assert failed: st->queued < l->cfg->stage[s].queue (no room in the queue), stage.c:370 in StageCommit()
+[09:31] car #18 enters prewash post 1
+[09:31] prewash post 1 starts on car #18 Standard (5 min)
+[09:31] car #17 waits in tunnel queue (3/2)
+[09:33] car #22 arrives at the entrance
+[09:33] car #22 chooses Express (tunnel > dry)
+[09:33] car #22 turned away: tunnel queue is full (3/2)
+[09:36] prewash post 1 finished car #18
+[09:36] car #18 waits on prewash post 1: tunnel is full
+[09:37] tunnel post 1 BREAKS DOWN with car #13 on it (repair 13 min)
+[09:37] wax post 1 finished car #11
+[09:37] car #11 leaves wax post 1
+[09:37] car #11 moves wax -> dry
+[09:37] car #11 enters dry post 1
+[09:37] dry post 1 starts on car #11 Premium (3 min)
+[09:38] car #23 arrives at the entrance
+[09:38] car #23 chooses Express (tunnel > dry)
+[09:38] car #23 turned away: tunnel queue is full (3/2)
+[09:40] dry post 1 finished car #11
+[09:40] car #11 leaves dry post 1
+[09:40] car #11 is clean! Premium done in 60 min, drives away
+[09:44] car #24 arrives at the entrance
+[09:44] car #24 chooses Standard (prewash > tunnel > dry)
+[09:44] car #24 waits in prewash queue (3/3)
+[09:48] car #25 arrives at the entrance
+[09:48] car #25 chooses Premium (prewash > tunnel > wax > dry)
+carwash-mon: soft assert failed: st->queued < l->cfg->stage[s].queue (no room in the queue), stage.c:370 in StageCommit()
+[09:48] car #25 waits in prewash queue (4/3)
+[09:50] tunnel post 1 is repaired and back in service
+[09:52] tunnel post 1 finished car #13
+[09:52] car #26 arrives at the entrance
+[09:52] car #26 chooses Standard (prewash > tunnel > dry)
+[09:52] car #13 leaves tunnel post 1
+[09:52] car #13 moves tunnel -> wax
+[09:52] car #13 enters wax post 1
+[09:52] wax post 1 starts on car #13 Premium (5 min)
+[09:52] car #14 enters tunnel post 1
+[09:52] tunnel post 1 starts on car #14 Standard (6 min)
+[09:52] car #26 turned away: prewash queue is full (4/3)
+[09:52] car #18 leaves prewash post 1
+[09:52] car #18 moves prewash -> tunnel
+carwash-mon: soft assert failed: st->queued < l->cfg->stage[s].queue (no room in the queue), stage.c:370 in StageCommit()
+[09:52] car #19 enters prewash post 1
+[09:52] prewash post 1 starts on car #19 Standard (3 min)
+[09:52] car #18 waits in tunnel queue (3/2)
+[09:54] car #27 arrives at the entrance
+[09:54] car #27 chooses Express (tunnel > dry)
+[09:54] car #27 turned away: tunnel queue is full (3/2)
+[09:55] prewash post 1 finished car #19
+[09:55] car #19 waits on prewash post 1: tunnel is full
+[09:57] wax post 1 finished car #13
+[09:57] car #13 leaves wax post 1
+[09:57] car #13 moves wax -> dry
+[09:57] car #13 enters dry post 1
+[09:57] dry post 1 starts on car #13 Premium (5 min)
+[09:58] tunnel post 1 finished car #14
+[09:58] car #14 leaves tunnel post 1
+[09:58] car #14 moves tunnel -> dry
+[09:58] car #14 waits in dry queue (1/3)
+[09:58] car #16 enters tunnel post 1
+[09:58] tunnel post 1 starts on car #16 Premium (8 min)
+[09:58] car #19 leaves prewash post 1
+[09:58] car #19 moves prewash -> tunnel
+carwash-mon: soft assert failed: st->queued < l->cfg->stage[s].queue (no room in the queue), stage.c:370 in StageCommit()
+[09:58] car #20 enters prewash post 1
+[09:58] prewash post 1 starts on car #20 Premium (5 min)
+[09:58] car #19 waits in tunnel queue (3/2)
+[09:59] car #28 arrives at the entrance
+[09:59] car #28 chooses Standard (prewash > tunnel > dry)
+[09:59] car #28 waits in prewash queue (3/3)
+[10:02] dry post 1 finished car #13
+[10:02] car #13 leaves dry post 1
+[10:02] car #13 is clean! Premium done in 74 min, drives away
+[10:02] car #14 enters dry post 1
+[10:02] dry post 1 starts on car #14 Standard (5 min)
+[10:03] prewash post 1 finished car #20
+[10:03] car #20 waits on prewash post 1: tunnel is full
+[10:05] car #29 arrives at the entrance
+[10:05] car #29 chooses Express (tunnel > dry)
+[10:05] car #29 turned away: tunnel queue is full (3/2)
+[10:06] tunnel post 1 finished car #16
+[10:06] car #16 leaves tunnel post 1
+[10:06] car #16 moves tunnel -> wax
+[10:06] car #16 enters wax post 1
+[10:06] wax post 1 starts on car #16 Premium (6 min)
+[10:06] car #17 enters tunnel post 1
+[10:06] tunnel post 1 starts on car #17 Standard (8 min)
+[10:06] car #20 leaves prewash post 1
+[10:06] car #20 moves prewash -> tunnel
+carwash-mon: soft assert failed: st->queued < l->cfg->stage[s].queue (no room in the queue), stage.c:370 in StageCommit()
+[10:06] car #20 waits in tunnel queue (3/2)
+[10:06] car #24 enters prewash post 1
+[10:06] prewash post 1 starts on car #24 Standard (3 min)
+[10:07] dry post 1 finished car #14
+[10:07] car #14 leaves dry post 1
+[10:07] car #14 is clean! Standard done in 74 min, drives away
+[10:09] prewash post 1 finished car #24
+[10:09] car #24 waits on prewash post 1: tunnel is full
+[10:11] car #30 arrives at the entrance
+[10:11] car #30 chooses Express (tunnel > dry)
+[10:11] car #30 turned away: tunnel queue is full (3/2)
+[10:12] wax post 1 finished car #16
+[10:12] car #16 leaves wax post 1
+[10:12] car #16 moves wax -> dry
+[10:12] car #16 enters dry post 1
+[10:12] dry post 1 starts on car #16 Premium (5 min)
+[10:14] dry post 1 BREAKS DOWN with car #16 on it (repair 9 min)
+[10:14] tunnel post 1 finished car #17
+[10:14] car #17 leaves tunnel post 1
+[10:14] car #17 moves tunnel -> dry
+[10:14] car #17 waits in dry queue (1/3)
+[10:14] car #18 enters tunnel post 1
+[10:14] tunnel post 1 starts on car #18 Standard (7 min)
+[10:14] car #24 leaves prewash post 1
+[10:14] car #24 moves prewash -> tunnel
+carwash-mon: soft assert failed: st->queued < l->cfg->stage[s].queue (no room in the queue), stage.c:370 in StageCommit()
+[10:14] car #24 waits in tunnel queue (3/2)
+[10:14] car #25 enters prewash post 1
+[10:14] prewash post 1 starts on car #25 Premium (4 min)
+[10:17] car #31 arrives at the entrance
+[10:17] car #31 chooses Premium (prewash > tunnel > wax > dry)
+[10:17] car #31 waits in prewash queue (2/3)
+[10:18] prewash post 1 finished car #25
+[10:18] car #25 waits on prewash post 1: tunnel is full
+[10:20] tunnel post 1 BREAKS DOWN with car #18 on it (repair 5 min)
+[10:23] dry post 1 is repaired and back in service
+[10:23] prewash post 1 BREAKS DOWN with car #25 on it (repair 13 min)
+[10:23] car #32 arrives at the entrance
+[10:23] car #32 chooses Express (tunnel > dry)
+[10:23] car #32 turned away: tunnel queue is full (3/2)
+[10:24] dry post 1 BREAKS DOWN with car #16 on it (repair 7 min)
+[10:25] tunnel post 1 is repaired and back in service
+[10:26] tunnel post 1 finished car #18
+[10:26] car #18 leaves tunnel post 1
+[10:26] car #18 moves tunnel -> dry
+[10:26] car #18 waits in dry queue (2/3)
+[10:26] car #19 enters tunnel post 1
+[10:26] tunnel post 1 starts on car #19 Standard (8 min)
+[10:26] car #25 leaves prewash post 1
+[10:26] car #25 moves prewash -> tunnel
+carwash-mon: soft assert failed: st->queued < l->cfg->stage[s].queue (no room in the queue), stage.c:370 in StageCommit()
+[10:26] car #25 waits in tunnel queue (3/2)
+[10:29] car #33 arrives at the entrance
+[10:29] car #33 chooses Standard (prewash > tunnel > dry)
+[10:29] car #33 waits in prewash queue (3/3)
+[10:31] dry post 1 is repaired and back in service
+[10:33] dry post 1 finished car #16
+[10:33] car #16 leaves dry post 1
+[10:33] car #16 is clean! Premium done in 92 min, drives away
+[10:33] car #17 enters dry post 1
+[10:33] dry post 1 starts on car #17 Standard (4 min)
+[10:34] tunnel post 1 finished car #19
+[10:34] car #19 leaves tunnel post 1
+[10:34] car #19 moves tunnel -> dry
+[10:34] car #19 waits in dry queue (2/3)
+[10:34] car #20 enters tunnel post 1
+[10:34] tunnel post 1 starts on car #20 Premium (9 min)
+[10:35] dry post 1 BREAKS DOWN with car #17 on it (repair 14 min)
+[10:35] car #34 arrives at the entrance
+[10:35] car #34 chooses Standard (prewash > tunnel > dry)
+carwash-mon: soft assert failed: st->queued < l->cfg->stage[s].queue (no room in the queue), stage.c:370 in StageCommit()
+[10:35] car #34 waits in prewash queue (4/3)
+[10:36] prewash post 1 is repaired and back in service
+[10:36] car #28 enters prewash post 1
+[10:36] prewash post 1 starts on car #28 Standard (5 min)
+[10:38] tunnel post 1 BREAKS DOWN with car #20 on it (repair 9 min)
+[10:38] car #35 arrives at the entrance
+[10:38] car #35 chooses Standard (prewash > tunnel > dry)
+carwash-mon: soft assert failed: st->queued < l->cfg->stage[s].queue (no room in the queue), stage.c:370 in StageCommit()
+[10:38] car #35 waits in prewash queue (4/3)
+[10:41] prewash post 1 finished car #28
+[10:41] car #28 leaves prewash post 1
+[10:41] car #28 moves prewash -> tunnel
+carwash-mon: soft assert failed: st->queued < l->cfg->stage[s].queue (no room in the queue), stage.c:370 in StageCommit()
+[10:41] car #28 waits in tunnel queue (3/2)
+[10:41] car #31 enters prewash post 1
+[10:41] prewash post 1 starts on car #31 Premium (4 min)
+[10:42] car #36 arrives at the entrance
+[10:42] car #36 chooses Standard (prewash > tunnel > dry)
+carwash-mon: soft assert failed: st->queued < l->cfg->stage[s].queue (no room in the queue), stage.c:370 in StageCommit()
+[10:42] car #36 waits in prewash queue (4/3)
+[10:44] car #37 arrives at the entrance
+[10:44] car #37 chooses Premium (prewash > tunnel > wax > dry)
+[10:44] car #37 turned away: prewash queue is full (4/3)
+[10:45] prewash post 1 finished car #31
+[10:45] car #31 waits on prewash post 1: tunnel is full
+[10:46] tunnel post 2 BREAKS DOWN (repair 7 min)
+[10:47] tunnel post 1 is repaired and back in service
+[10:48] car #38 arrives at the entrance
+[10:48] car #38 chooses Express (tunnel > dry)
+[10:48] car #38 turned away: tunnel queue is full (3/2)
+[10:49] dry post 1 is repaired and back in service
+[10:51] dry post 1 finished car #17
+[10:51] car #39 arrives at the entrance
+[10:51] car #39 chooses Standard (prewash > tunnel > dry)
+[10:51] car #39 turned away: prewash queue is full (4/3)
+[10:51] car #17 leaves dry post 1
+[10:51] car #17 is clean! Standard done in 105 min, drives away
+[10:51] car #18 enters dry post 1
+[10:51] dry post 1 starts on car #18 Standard (3 min)
+[10:52] tunnel post 1 finished car #20
+[10:52] car #20 leaves tunnel post 1
+[10:52] car #20 moves tunnel -> wax
+[10:52] car #20 enters wax post 1
+[10:52] wax post 1 starts on car #20 Premium (5 min)
+[10:52] car #24 enters tunnel post 1
+[10:52] tunnel post 1 starts on car #24 Standard (7 min)
+[10:52] car #31 leaves prewash post 1
+[10:52] car #31 moves prewash -> tunnel
+carwash-mon: soft assert failed: st->queued < l->cfg->stage[s].queue (no room in the queue), stage.c:370 in StageCommit()
+[10:52] car #33 enters prewash post 1
+[10:52] prewash post 1 starts on car #33 Standard (5 min)
+[10:52] car #31 waits in tunnel queue (3/2)
+[10:53] tunnel post 2 is repaired and back in service
+[10:54] dry post 1 finished car #18
+[10:54] car #18 leaves dry post 1
+[10:54] car #18 is clean! Standard done in 102 min, drives away
+[10:54] car #19 enters dry post 1
+[10:54] dry post 1 starts on car #19 Standard (4 min)
+[10:56] car #40 arrives at the entrance
+[10:56] car #40 chooses Premium (prewash > tunnel > wax > dry)
+carwash-mon: soft assert failed: st->queued < l->cfg->stage[s].queue (no room in the queue), stage.c:370 in StageCommit()
+[10:56] car #40 waits in prewash queue (4/3)
+[10:56] ENTRANCE CLOSED, 11 accepted car(s) still inside
+[10:57] wax post 1 finished car #20
+[10:57] prewash post 1 finished car #33
+[10:57] car #20 leaves wax post 1
+[10:57] car #20 moves wax -> dry
+[10:57] car #20 waits in dry queue (1/3)
+[10:57] car #33 waits on prewash post 1: tunnel is full
+[10:58] dry post 1 finished car #19
+[10:58] car #19 leaves dry post 1
+[10:58] car #19 is clean! Standard done in 101 min, drives away
+[10:58] car #20 enters dry post 1
+[10:58] dry post 1 starts on car #20 Premium (5 min)
+[10:59] tunnel post 1 finished car #24
+[10:59] car #24 leaves tunnel post 1
+[10:59] car #24 moves tunnel -> dry
+[10:59] car #24 waits in dry queue (1/3)
+[10:59] car #25 enters tunnel post 1
+[10:59] tunnel post 1 starts on car #25 Premium (8 min)
+[10:59] car #33 leaves prewash post 1
+[10:59] car #33 moves prewash -> tunnel
+carwash-mon: soft assert failed: st->queued < l->cfg->stage[s].queue (no room in the queue), stage.c:370 in StageCommit()
+[10:59] car #34 enters prewash post 1
+[10:59] prewash post 1 starts on car #34 Standard (4 min)
+[10:59] car #33 waits in tunnel queue (3/2)
+[11:03] dry post 1 finished car #20
+[11:03] prewash post 1 finished car #34
+[11:03] car #20 leaves dry post 1
+[11:03] car #20 is clean! Premium done in 102 min, drives away
+[11:03] car #34 waits on prewash post 1: tunnel is full
+[11:03] car #24 enters dry post 1
+[11:03] dry post 1 starts on car #24 Standard (3 min)
+[11:06] dry post 1 finished car #24
+[11:06] car #24 leaves dry post 1
+[11:06] car #24 is clean! Standard done in 82 min, drives away
+[11:07] tunnel post 1 finished car #25
+[11:07] car #25 leaves tunnel post 1
+[11:07] car #25 moves tunnel -> wax
+[11:07] car #25 enters wax post 1
+[11:07] wax post 1 starts on car #25 Premium (5 min)
+[11:07] car #28 enters tunnel post 1
+[11:07] tunnel post 1 starts on car #28 Standard (6 min)
+[11:07] car #34 leaves prewash post 1
+[11:07] car #34 moves prewash -> tunnel
+carwash-mon: soft assert failed: st->queued < l->cfg->stage[s].queue (no room in the queue), stage.c:370 in StageCommit()
+[11:07] car #35 enters prewash post 1
+[11:07] prewash post 1 starts on car #35 Standard (4 min)
+[11:07] car #34 waits in tunnel queue (3/2)
+[11:11] prewash post 1 finished car #35
+[11:11] car #35 waits on prewash post 1: tunnel is full
+[11:12] wax post 1 finished car #25
+[11:12] car #25 leaves wax post 1
+[11:12] car #25 moves wax -> dry
+[11:12] car #25 enters dry post 1
+[11:12] dry post 1 starts on car #25 Premium (4 min)
+[11:13] tunnel post 1 finished car #28
+[11:13] car #28 leaves tunnel post 1
+[11:13] car #28 moves tunnel -> dry
+[11:13] car #28 waits in dry queue (1/3)
+[11:13] car #31 enters tunnel post 1
+[11:13] tunnel post 1 starts on car #31 Premium (7 min)
+[11:13] car #35 leaves prewash post 1
+[11:13] car #35 moves prewash -> tunnel
+carwash-mon: soft assert failed: st->queued < l->cfg->stage[s].queue (no room in the queue), stage.c:370 in StageCommit()
+[11:13] car #36 enters prewash post 1
+[11:13] prewash post 1 starts on car #36 Standard (3 min)
+[11:13] car #35 waits in tunnel queue (3/2)
+[11:16] dry post 1 finished car #25
+[11:16] prewash post 1 finished car #36
+[11:16] car #25 leaves dry post 1
+[11:16] car #25 is clean! Premium done in 88 min, drives away
+[11:16] car #36 waits on prewash post 1: tunnel is full
+[11:16] car #28 enters dry post 1
+[11:16] dry post 1 starts on car #28 Standard (3 min)
+[11:19] dry post 1 finished car #28
+[11:19] car #28 leaves dry post 1
+[11:19] car #28 is clean! Standard done in 80 min, drives away
+[11:20] tunnel post 1 finished car #31
+[11:20] car #31 leaves tunnel post 1
+[11:20] car #31 moves tunnel -> wax
+[11:20] car #31 enters wax post 1
+[11:20] wax post 1 starts on car #31 Premium (6 min)
+[11:20] car #33 enters tunnel post 1
+[11:20] tunnel post 1 starts on car #33 Standard (6 min)
+[11:20] car #36 leaves prewash post 1
+[11:20] car #36 moves prewash -> tunnel
+carwash-mon: soft assert failed: st->queued < l->cfg->stage[s].queue (no room in the queue), stage.c:370 in StageCommit()
+[11:20] car #36 waits in tunnel queue (3/2)
+[11:20] car #40 enters prewash post 1
+[11:20] prewash post 1 starts on car #40 Premium (4 min)
+[11:24] prewash post 1 finished car #40
+[11:24] car #40 waits on prewash post 1: tunnel is full
+[11:26] wax post 1 finished car #31
+[11:26] tunnel post 1 finished car #33
+[11:26] car #31 leaves wax post 1
+[11:26] car #31 moves wax -> dry
+[11:26] car #31 enters dry post 1
+[11:26] dry post 1 starts on car #31 Premium (5 min)
+[11:26] car #33 leaves tunnel post 1
+[11:26] car #33 moves tunnel -> dry
+[11:26] car #33 waits in dry queue (1/3)
+[11:26] car #34 enters tunnel post 1
+[11:26] tunnel post 1 starts on car #34 Standard (8 min)
+[11:26] car #40 leaves prewash post 1
+[11:26] car #40 moves prewash -> tunnel
+carwash-mon: soft assert failed: st->queued < l->cfg->stage[s].queue (no room in the queue), stage.c:370 in StageCommit()
+[11:26] car #40 waits in tunnel queue (3/2)
+[11:30] wax post 1 BREAKS DOWN (repair 8 min)
+[11:31] dry post 1 finished car #31
+[11:31] car #31 leaves dry post 1
+[11:31] car #31 is clean! Premium done in 74 min, drives away
+[11:31] car #33 enters dry post 1
+[11:31] dry post 1 starts on car #33 Standard (4 min)
+[11:34] tunnel post 1 finished car #34
+[11:34] car #34 leaves tunnel post 1
+[11:34] car #34 moves tunnel -> dry
+[11:34] car #34 waits in dry queue (1/3)
+[11:34] car #35 enters tunnel post 1
+[11:34] tunnel post 1 starts on car #35 Standard (9 min)
+[11:35] dry post 1 finished car #33
+[11:35] car #33 leaves dry post 1
+[11:35] car #33 is clean! Standard done in 66 min, drives away
+[11:35] car #34 enters dry post 1
+[11:35] dry post 1 starts on car #34 Standard (4 min)
+[11:38] dry post 1 BREAKS DOWN with car #34 on it (repair 14 min)
+[11:38] wax post 1 is repaired and back in service
+[11:43] tunnel post 1 finished car #35
+[11:43] car #35 leaves tunnel post 1
+[11:43] car #35 moves tunnel -> dry
+[11:43] car #35 waits in dry queue (1/3)
+[11:43] car #36 enters tunnel post 1
+[11:43] tunnel post 1 starts on car #36 Standard (8 min)
+[11:47] tunnel post 2 BREAKS DOWN (repair 14 min)
+[11:51] tunnel post 1 finished car #36
+[11:51] car #36 leaves tunnel post 1
+[11:51] car #36 moves tunnel -> dry
+[11:51] car #36 waits in dry queue (2/3)
+[11:51] car #40 enters tunnel post 1
+[11:51] tunnel post 1 starts on car #40 Premium (6 min)
+[11:52] prewash post 1 BREAKS DOWN (repair 7 min)
+[11:52] dry post 1 is repaired and back in service
+[11:53] dry post 1 finished car #34
+[11:53] car #34 leaves dry post 1
+[11:53] car #34 is clean! Standard done in 78 min, drives away
+[11:53] car #35 enters dry post 1
+[11:53] dry post 1 starts on car #35 Standard (4 min)
+[11:57] dry post 1 finished car #35
+[11:57] tunnel post 1 finished car #40
+[11:57] car #35 leaves dry post 1
+[11:57] car #35 is clean! Standard done in 79 min, drives away
+[11:57] car #40 leaves tunnel post 1
+[11:57] car #40 moves tunnel -> wax
+[11:57] car #40 enters wax post 1
+[11:57] wax post 1 starts on car #40 Premium (6 min)
+[11:57] car #36 enters dry post 1
+[11:57] dry post 1 starts on car #36 Standard (5 min)
+[11:59] prewash post 1 is repaired and back in service
+[12:01] tunnel post 2 is repaired and back in service
+[12:02] dry post 1 finished car #36
+[12:02] car #36 leaves dry post 1
+[12:02] car #36 is clean! Standard done in 80 min, drives away
+[12:03] wax post 1 finished car #40
+[12:03] car #40 leaves wax post 1
+[12:03] car #40 moves wax -> dry
+[12:03] car #40 enters dry post 1
+[12:03] dry post 1 starts on car #40 Premium (3 min)
+[12:06] dry post 1 finished car #40
+[12:06] car #40 leaves dry post 1
+[12:06] car #40 is clean! Premium done in 70 min, drives away
+
+=================== RESULTS ===================
+Outcome        : finished: entrance closed and every accepted car washed
+Model time     : 08:00 - 12:06 (246 min)
+Cars arrived   : 40 (accepted 26, turned away 14)
+Cars washed    : 26, still inside: 0
+Time at wash   : avg 68.0 min, max 105 min
+Waiting        : avg 50.7 min per car (queues, blocked posts, repairs)
+Throughput     : 6.3 cars per hour
+Failures       : 19, blocked-post episodes: 18
+Blocked time   : 82 car-minutes waiting for room
+By program     : Express     3 washed, avg 34.0 min
+                 Standard   13 washed, avg 76.7 min
+                 Premium    10 washed, avg 66.9 min
+Threads        : created 49 (cars 40), peak alive cars 13, waits 249, start barrier 9 threads (mutex+cond)
+
+TIMELINE OF POSTS, 1 column = 6 min:  # busy  = blocked  X broken  . idle
+             08:00     09:00     10:00     11:00         busy block repair
+prewash  P1 |##.#.##=XX#=####===####=XX##=#####....XX..|  36%   31%   10%
+tunnel   P1 |.#####XXX#######XXX####X##XX############..|  78%    0%   15%
+tunnel   P2 |..........XX...............XX.........XX..|   0%    0%   13%
+wax      P1 |..#..#......#..#...#.#.......#.#.#.XX..##.|  22%    0%    3%
+dry      P1 |XX.##.#.###.###.#..##.XXXXXX###.#.##XXX##.|  44%    0%   21%
+dry      P2 |.....XX..X..XX............................|   0%    0%    9%
+Bottleneck     : tunnel (posts busy 39% of the time)
+Most blocked   : prewash (posts held finished cars 32% of the time)
+AUDITOR: invariants checked after each of 634 events, violations: 30
+  I1 a post holds at most its capacity    ok
+  I2 a car is in exactly one place        ok
+  I3 stages follow the program order      ok
+  I4 a broken post starts no operation    ok
+  I5 queue capacity is not exceeded       FAILED (30 times)
+Journal saved to carwash.log (seed 3)
+carwash-mon: soft asserts failed 30 time(s), see messages above
+[exit code 4]

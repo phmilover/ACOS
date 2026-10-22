@@ -1,0 +1,39 @@
+$ bin/carwash-mon -c data/rush-hour.cfg -s 7 -d 0   (live view, the busiest frame)
+=== AUTOMATIC CAR WASH: simulation of one working day ===
+Stages:
+  prewash   posts 1, operation 3-5 min, queue 3
+  tunnel    posts 1, operation 6-9 min, queue 1
+  wax       posts 1, operation 4-6 min, queue 1
+  dry       posts 1, operation 3-5 min, queue 1
+Programs:
+  Express   weight 30, priority 1, route: tunnel > dry
+  Standard  weight 40, priority 2, route: prewash > tunnel > dry
+  Premium   weight 30, priority 3, route: prewash > tunnel > wax > dry
+Cars: 60, arrival every 1-3 min, working day: 180 min
+Failures: p=0.010 per post per minute, repair 5-10 min
+Priority rule: fifo, seed: 7
+Mode: threads in parallel
+
+[2J[?25l[H[1m CAR WASH [0m 09:29  ━━━━━━━━━━━━━━[2m────────────────[0m[32m  entrance open[0m[K
+ [1;36m●[0m[2m Express   [0m[1;33m●[0m[2m Standard   [0m[1;35m●[0m[2m Premium   [0m[K
+[K
+ prewash   [1;35m46[0m [1;35m47[0m [1;33m49[0m   [1;35m38[0m [32m█[0m[2m░░░░░░[0m   [K
+ tunnel    [1;35m34[0m         [1;35m30[0m [32m[0m[2m░░░░░░░[0m   [K
+ wax        [2m·[0m         [1;35m24[0m [32m█[0m[2m░░░░░░[0m   [K
+ dry        [2m·[0m         [1;35m21[0m [32m████[0m[2m░░░[0m   [K
+[K
+ washed 8[2m · [0minside 8[2m · [0mturned away 33[2m · [0mbreakdowns 3   [32m✓[0m[2m 341 checks ok[0m[K
+[K
+[1m THREADS[0m  coordinator 1 (sleeping)[2m · [0mposts 4 (4 sleeping)[2m · [0mcars 8 (4 washing, 4 in queue)[2m · [0mparks 91[K
+   car #34 waits in tunnel queue -> a post[2m   [tid 16021556][0m[K
+   car #46 waits in prewash queue -> a post[2m   [tid 16021568][0m[K
+   car #47 waits in prewash queue -> a post[2m   [tid 16021569][0m[K
+   car #49 waits in prewash queue -> a post[2m   [tid 16021571][0m[K
+[K
+[2m 09:28 [0m[0mcar #34 waits in tunnel queue (1/1)[0m[K
+[2m 09:28 [0m[0mcar #38 enters prewash post 1[0m[K
+[2m 09:28 [0m[0mprewash post 1 starts on car #38 Premium (4 min)[0m[K
+[2m 09:29 [0m[36mcar #49 arrives at the entrance[0m[K
+[2m 09:29 [0m[36mcar #49 chooses Standard (prewash > tunnel > dry)[0m[K
+[2m 09:29 [0m[0mcar #49 waits in prewash queue (3/3)[0m[K
+[J[J[0m[?25h

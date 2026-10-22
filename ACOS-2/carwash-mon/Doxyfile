@@ -4,7 +4,7 @@
 PROJECT_NAME           = "Автомойка MON (вариант 43)"
 OUTPUT_DIRECTORY       = build/doxygen
 OUTPUT_LANGUAGE        = Russian
-INPUT                  = README.md include src
+INPUT                  = README.md docs/threads.dox include src
 FILE_PATTERNS          = *.h *.c *.dox
 USE_MDFILE_AS_MAINPAGE = README.md
 OPTIMIZE_OUTPUT_FOR_C  = YES

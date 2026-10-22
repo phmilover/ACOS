@@ -42,7 +42,8 @@ Admit StageEnter(Line *l, Stage *st, Car *car) REQUIRES(st->m);
  * Истина, если car стоит в очереди st, она лучшая по правилу приоритета (при равной оценке -
  * кто раньше встал) и есть свободное место на исправном посту (при SAB_OVERFLOW последний пост
  * многопостовой стадии не ищется).
- * @param post @param seat куда записать найденное место
+ * @param post куда записать найденный пост
+ * @param seat куда записать найденное место
  * @return 1 - очередь car, место в *post, *seat; 0 - нет
  */
 int StageQueueTurn(Line *l, Stage *st, const Car *car, int *post, int *seat) REQUIRES(st->m);

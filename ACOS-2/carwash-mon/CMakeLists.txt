@@ -132,3 +132,139 @@ else()
         COMMAND ${CMAKE_COMMAND} -E echo "clang-tidy not found: brew install llvm (or apt install clang-tidy)"
         COMMAND ${CMAKE_COMMAND} -E false)
 endif()
+
+
+# Doxygen: cmake --build build --target docs, открыть build/doxygen/html/index.html.
+# Graphviz (dot) ищем здесь: build/Doxyfile.local подключает Doxyfile и включает HAVE_DOT
+# (графы вызовов и схемы @dot на странице «Потоки и синхронизация»); без dot схем нет
+find_package(Doxygen QUIET)
+find_program(DOT_EXECUTABLE dot HINTS /opt/homebrew/bin /usr/local/bin)
+if(DOT_EXECUTABLE)
+    get_filename_component(DOT_DIR ${DOT_EXECUTABLE} DIRECTORY)
+    file(WRITE ${CMAKE_BINARY_DIR}/Doxyfile.local
+        "@INCLUDE = Doxyfile\nHAVE_DOT = YES\nDOT_PATH = ${DOT_DIR}\n")
+else()
+    file(WRITE ${CMAKE_BINARY_DIR}/Doxyfile.local "@INCLUDE = Doxyfile\nHAVE_DOT = NO\n")
+endif()
+if(DOXYGEN_FOUND)
+    add_custom_target(docs
+        COMMAND ${DOXYGEN_EXECUTABLE} ${CMAKE_BINARY_DIR}/Doxyfile.local
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+else()
+    add_custom_target(docs
+        COMMAND ${CMAKE_COMMAND} -E echo "doxygen not found: brew install doxygen (or apt install doxygen)"
+        COMMAND ${CMAKE_COMMAND} -E false)
+endif()
+
+# ---- Проверки и инструменты (определяются только в основной сборке) ------------------------
+if(NOT CW_NESTED)
+    set(NEST -DCW_NESTED=ON)
+    set(RUN_TESTS_BIN bin/run_tests)
+
+    # Сборка Debug, не RelWithDebInfo: тот определяет NDEBUG и отключает SOFT_ASSERT, а тесты
+    # проверяют его срабатывания.
+    # cmake --build build --target tsan: сборка build-tsan и прогон тестов под ThreadSanitizer.
+    # halt_on_error=1 - первая же гонка валит прогон; тест саботажа race ждёт отчёта TSan
+    # (он запускается с этой же настройкой: отчёт напечатан до остановки)
+    add_custom_target(tsan
+        COMMAND ${CMAKE_COMMAND} -S . -B build-tsan -DCW_SANITIZE=thread
+                -DCMAKE_BUILD_TYPE=Debug ${NEST}
+        COMMAND ${CMAKE_COMMAND} --build build-tsan
+        COMMAND ${CMAKE_COMMAND} -E env TSAN_OPTIONS=halt_on_error=1 bin/unit_tests-tsan
+        COMMAND ${CMAKE_COMMAND} -E env TSAN_OPTIONS=halt_on_error=1
+                ${RUN_TESTS_BIN} bin/carwash-mon-tsan
+        DEPENDS run_tests
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR} USES_TERMINAL)
+
+    # asan: AddressSanitizer + UBSan. LeakSanitizer на macOS не поддержан, там detect_leaks=0
+    if(APPLE)
+        set(ASAN_LEAKS 0)
+    else()
+        set(ASAN_LEAKS 1)
+    endif()
+    add_custom_target(asan
+        COMMAND ${CMAKE_COMMAND} -S . -B build-asan -DCW_SANITIZE=address
+                -DCMAKE_BUILD_TYPE=Debug ${NEST}
+        COMMAND ${CMAKE_COMMAND} --build build-asan
+        COMMAND ${CMAKE_COMMAND} -E env ASAN_OPTIONS=detect_leaks=${ASAN_LEAKS}:halt_on_error=1
+                UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 bin/unit_tests-asan
+        COMMAND ${CMAKE_COMMAND} -E env ASAN_OPTIONS=detect_leaks=${ASAN_LEAKS}:halt_on_error=1
+                UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1
+                ${RUN_TESTS_BIN} bin/carwash-mon-asan
+        DEPENDS run_tests
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR} USES_TERMINAL)
+
+    # tsa: Thread Safety Analysis настоящим clang (Homebrew LLVM). Apple clang 21 не видит
+    # MEMBER_GUARDED_BY у полей структур (tsa.h), поэтому поля проверяет только этот clang
+    find_program(BREW_CLANG clang HINTS ${LLVM_HINTS} NO_DEFAULT_PATH)
+    if(BREW_CLANG)
+        add_custom_target(tsa
+            COMMAND ${CMAKE_COMMAND} -S . -B build-tsa -DCMAKE_C_COMPILER=${BREW_CLANG}
+                    -DCW_SUFFIX=-tsa ${NEST}
+                    "-DCMAKE_C_FLAGS=-Wthread-safety -Wthread-safety-beta -Werror"
+            COMMAND ${CMAKE_COMMAND} --build build-tsa
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR} USES_TERMINAL)
+    else()
+        add_custom_target(tsa
+            COMMAND ${CMAKE_COMMAND} -E echo "Homebrew clang not found: brew install llvm"
+            COMMAND ${CMAKE_COMMAND} -E false)
+    endif()
+
+    # stress: сотни прогонов в обычном режиме (scripts/stress.sh [бинарник [число]])
+    add_custom_target(stress
+        COMMAND scripts/stress.sh $<TARGET_FILE:carwash-mon> 500
+        DEPENDS carwash-mon
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR} USES_TERMINAL)
+
+    # cppcheck
+    find_program(CPPCHECK cppcheck)
+    if(CPPCHECK)
+        add_custom_target(cppcheck
+            COMMAND ${CPPCHECK} --enable=warning,performance,portability --std=c11
+                    --error-exitcode=1 --suppress=missingIncludeSystem --quiet
+                    "-D__has_feature(x)=0"
+                    -I include src tests
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR} VERBATIM)
+    else()
+        add_custom_target(cppcheck
+            COMMAND ${CMAKE_COMMAND} -E echo "cppcheck not found: brew install cppcheck (or apt install cppcheck)"
+            COMMAND ${CMAKE_COMMAND} -E false)
+    endif()
+
+    # coverage: build-cov с инструментацией, check, отчёт llvm-cov (HTML и таблица в консоль).
+    # Инструменты берём в тон компилятору: Apple clang - xcrun, иначе llvm-* рядом с ним
+    if(APPLE)
+        execute_process(COMMAND xcrun -f llvm-cov RESULT_VARIABLE XC1 OUTPUT_QUIET ERROR_QUIET)
+        execute_process(COMMAND xcrun -f llvm-profdata RESULT_VARIABLE XC2 OUTPUT_QUIET ERROR_QUIET)
+        if(XC1 EQUAL 0 AND XC2 EQUAL 0)
+            set(COV_PROFDATA xcrun llvm-profdata)
+            set(COV_COV xcrun llvm-cov)
+        endif()
+    else()
+        find_program(LLVM_PROFDATA llvm-profdata)
+        find_program(LLVM_COV llvm-cov)
+        set(COV_PROFDATA ${LLVM_PROFDATA})
+        set(COV_COV ${LLVM_COV})
+    endif()
+    string(REPLACE ";" " " COV_PROFDATA_CMD "${COV_PROFDATA}")
+    if(CMAKE_C_COMPILER_ID MATCHES "Clang" AND COV_PROFDATA AND COV_COV)
+        add_custom_target(coverage
+            COMMAND ${CMAKE_COMMAND} -E remove_directory build-cov/prof
+            COMMAND ${CMAKE_COMMAND} -S . -B build-cov -DCW_COVERAGE=ON -DCW_SUFFIX=-cov
+                    -DCMAKE_BUILD_TYPE=Debug ${NEST}
+            COMMAND ${CMAKE_COMMAND} -E env LLVM_PROFILE_FILE=build-cov/prof/%p.profraw
+                    ${CMAKE_COMMAND} --build build-cov --target check
+            COMMAND sh -c "${COV_PROFDATA_CMD} merge -sparse build-cov/prof/*.profraw -o build-cov/all.profdata"
+            COMMAND ${COV_COV} show -format=html -output-dir=build-cov/html
+                    -instr-profile=build-cov/all.profdata bin/carwash-mon-cov
+                    -object bin/unit_tests-cov src
+            COMMAND ${COV_COV} report -instr-profile=build-cov/all.profdata bin/carwash-mon-cov
+                    -object bin/unit_tests-cov src
+            COMMAND ${CMAKE_COMMAND} -E echo "HTML report: build-cov/html/index.html"
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR} USES_TERMINAL)
+    else()
+        add_custom_target(coverage
+            COMMAND ${CMAKE_COMMAND} -E echo "coverage needs clang with llvm-cov and llvm-profdata (xcrun on macOS)"
+            COMMAND ${CMAKE_COMMAND} -E false)
+    endif()
+endif()
