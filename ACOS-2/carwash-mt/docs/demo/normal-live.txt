@@ -1,0 +1,86 @@
+$ bin/carwash-mt -s 42 -d 0   (live view, last frames)
+=== AUTOMATIC CAR WASH: simulation of one working day ===
+Stages:
+  prewash   posts 1, operation 3-5 min, queue 3
+  tunnel    posts 2, operation 6-9 min, queue 2
+  wax       posts 1, operation 4-6 min, queue 2
+  dry       posts 2, operation 3-5 min, queue 3
+Programs:
+  Express   weight 40, priority 1, route: tunnel > dry
+  Standard  weight 40, priority 2, route: prewash > tunnel > dry
+  Premium   weight 20, priority 3, route: prewash > tunnel > wax > dry
+Cars: 40, arrival every 2-6 min, working day: 240 min
+Failures: p=0.010 per post per minute, repair 5-15 min
+Priority rule: fifo, seed: 42
+Mode: threads in parallel
+
+[2J[?25l[H[1m CAR WASH [0m 11:03  ━━━━━━━━━━━━━━━━━━━━━━[2m────────[0m[33m  entrance closed[0m[K
+ [1;36m●[0m[2m Express   [0m[1;33m●[0m[2m Standard   [0m[1;35m●[0m[2m Premium   [0m[K
+[K
+ prewash    [2m·[0m  [2m·[0m  [2m·[0m      [1;31mfix  3m[0m   [K
+ tunnel     [2m·[0m  [2m·[0m         [2mfree   [0m      [2mfree   [0m   [K
+ wax        [2m·[0m  [2m·[0m         [2mfree   [0m   [K
+ dry        [2m·[0m  [2m·[0m  [2m·[0m      [2mfree   [0m      [2mfree   [0m   [K
+[K
+ washed 39[2m · [0minside 0[2m · [0mturned away 1[2m · [0mbreakdowns 9   [32m✓[0m[2m 725 checks ok[0m[K
+[K
+[1m THREADS[0m  coordinator 0[2m · [0mposts 6 (6 sleeping)[2m · [0mcars 0[2m · [0mparks 116[K
+[K
+[2m 10:58 [0m[0mcar #40 moves wax -> dry[0m[K
+[2m 10:58 [0m[0mcar #40 enters dry post 1[0m[K
+[2m 10:58 [0m[0mdry post 1 starts on car #40 Premium (5 min)[0m[K
+[2m 11:03 [0m[0mdry post 1 finished car #40[0m[K
+[2m 11:03 [0m[0mcar #40 leaves dry post 1[0m[K
+[2m 11:03 [0m[32mcar #40 is clean! Premium done in 38 min, drives away[0m[K
+[J[H[1m CAR WASH [0m 11:03  ━━━━━━━━━━━━━━━━━━━━━━[2m────────[0m[32m  all cars washed[0m[K
+ [1;36m●[0m[2m Express   [0m[1;33m●[0m[2m Standard   [0m[1;35m●[0m[2m Premium   [0m[K
+[K
+ prewash    [2m·[0m  [2m·[0m  [2m·[0m      [1;31mfix  3m[0m   [K
+ tunnel     [2m·[0m  [2m·[0m         [2mfree   [0m      [2mfree   [0m   [K
+ wax        [2m·[0m  [2m·[0m         [2mfree   [0m   [K
+ dry        [2m·[0m  [2m·[0m  [2m·[0m      [2mfree   [0m      [2mfree   [0m   [K
+[K
+ washed 39[2m · [0minside 0[2m · [0mturned away 1[2m · [0mbreakdowns 9   [32m✓[0m[2m 725 checks ok[0m[K
+[K
+[1m THREADS[0m  coordinator 0[2m · [0mposts 6 (6 sleeping)[2m · [0mcars 0[2m · [0mparks 116[K
+[K
+[2m 10:58 [0m[0mcar #40 moves wax -> dry[0m[K
+[2m 10:58 [0m[0mcar #40 enters dry post 1[0m[K
+[2m 10:58 [0m[0mdry post 1 starts on car #40 Premium (5 min)[0m[K
+[2m 11:03 [0m[0mdry post 1 finished car #40[0m[K
+[2m 11:03 [0m[0mcar #40 leaves dry post 1[0m[K
+[2m 11:03 [0m[32mcar #40 is clean! Premium done in 38 min, drives away[0m[K
+[J[0m[?25h
+=================== RESULTS ===================
+Outcome        : finished: entrance closed and every accepted car washed
+Model time     : 08:00 - 11:03 (183 min)
+Cars arrived   : 40 (accepted 39, turned away 1)
+Cars washed    : 39, still inside: 0
+Time at wash   : avg 22.7 min, max 38 min
+Waiting        : avg 7.2 min per car (queues, blocked posts, repairs)
+Throughput     : 12.8 cars per hour
+Failures       : 9, blocked-post episodes: 1
+Blocked time   : 2 car-minutes waiting for room
+By program     : Express    14 washed, avg 17.1 min
+                 Standard   14 washed, avg 23.1 min
+                 Premium    11 washed, avg 29.3 min
+Threads        : created 49 (cars 40), peak alive cars 8, parks 116
+
+TIMELINE OF POSTS, 1 column = 4 min:  # busy  = blocked  X broken  . idle
+             08:00          09:00          10:00             busy block repair
+prewash  P1 |#.########...###....########.###XXXX###.....XX|  51%    1%   11%
+tunnel   P1 |########################################XXX...|  82%    0%    7%
+tunnel   P2 |.##.################XXX#################......|  76%    0%    6%
+wax      P1 |..##.######.......##......###...##...XXXX#.##.|  31%    0%    7%
+dry      P1 |..#.###.###XXX##XX###..####.#####.###.#.###.##|  55%    0%    9%
+dry      P2 |......##.#####.#.XX###.XXX###.#...####........|  31%    0%   10%
+Bottleneck     : tunnel (posts busy 79% of the time)
+Most blocked   : prewash (posts held finished cars 1% of the time)
+AUDITOR: invariants checked after each of 725 events, violations: 0
+  I1 a post holds at most its capacity    ok
+  I2 a car is in exactly one place        ok
+  I3 stages follow the program order      ok
+  I4 a broken post starts no operation    ok
+  I5 queue capacity is not exceeded       ok
+Journal saved to carwash.log (seed 42)
+[exit code 0]

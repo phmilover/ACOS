@@ -1,0 +1,35 @@
+# Документация по исходникам: cmake --build build --target docs
+# Результат - build/doxygen/html/index.html
+
+PROJECT_NAME           = "Автомойка MT (вариант 43)"
+OUTPUT_DIRECTORY       = build/doxygen
+OUTPUT_LANGUAGE        = Russian
+INPUT                  = README.md docs/threads.dox include src
+FILE_PATTERNS          = *.h *.c *.dox
+USE_MDFILE_AS_MAINPAGE = README.md
+OPTIMIZE_OUTPUT_FOR_C  = YES
+EXTRACT_ALL            = YES
+EXTRACT_STATIC         = YES
+JAVADOC_AUTOBRIEF      = YES
+SOURCE_BROWSER         = YES
+GENERATE_HTML          = YES
+GENERATE_LATEX         = NO
+# HAVE_DOT определяет CMake (цель docs): с Graphviz YES, иначе NO
+HAVE_DOT               = NO
+DOT_IMAGE_FORMAT       = svg
+INTERACTIVE_SVG        = NO
+CALL_GRAPH             = YES
+CALLER_GRAPH           = NO
+WARN_NO_PARAMDOC       = NO
+WARN_IF_DOC_ERROR      = YES
+WARN_AS_ERROR          = NO
+QUIET                  = YES
+WARN_IF_UNDOCUMENTED   = NO
+WARN_IF_INCOMPLETE_DOC = NO
+# Аннотации Thread Safety Analysis (tsa.h) Doxygen принимает за хвостовой тип возврата: гасим
+ENABLE_PREPROCESSING   = YES
+MACRO_EXPANSION        = YES
+EXPAND_ONLY_PREDEF     = YES
+PREDEFINED             = "CAPABILITY(x)=" "GUARDED_BY(x)=" "PT_GUARDED_BY(x)=" \
+                         "MEMBER_GUARDED_BY(x)=" "REQUIRES(...)=" "ACQUIRE(...)=" \
+                         "RELEASE(...)=" "EXCLUDES(...)=" "NO_TSA="

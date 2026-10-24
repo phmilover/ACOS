@@ -1,0 +1,12 @@
+digraph waits {
+  label="WAITS-FOR GRAPH at 09:57 (3 car(s) stuck)";
+  rankdir=LR;
+  node [fontname="Helvetica", fontsize=10];
+  "car #14" [shape=ellipse, label="car #14\nin wax queue\nwaits for a post in wax"];
+  "car #14" -> "stage wax" [label="post"];
+  "car #24" [shape=ellipse, label="car #24\nin wax queue\nwaits for a post in wax"];
+  "car #24" -> "stage wax" [label="post"];
+  "car #25" [shape=ellipse, label="car #25\non tunnel post 1\nwaits for room in wax"];
+  "car #25" -> "stage wax" [label="room"];
+  "stage wax" [shape=box, color=red, fontcolor=red, penwidth=2, label="wax: 0 posts\nROOT CAUSE: stage wax has no posts"];
+}

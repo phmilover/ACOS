@@ -1,0 +1,49 @@
+$ env TSAN_OPTIONS=halt_on_error=1:abort_on_error=0 bin/carwash-mon-tsan -m log -x race -s 1 -d 0
+=== AUTOMATIC CAR WASH: simulation of one working day ===
+Stages:
+  prewash   posts 1, operation 3-5 min, queue 3
+  tunnel    posts 2, operation 6-9 min, queue 2
+  wax       posts 1, operation 4-6 min, queue 2
+  dry       posts 2, operation 3-5 min, queue 3
+Programs:
+  Express   weight 40, priority 1, route: tunnel > dry
+  Standard  weight 40, priority 2, route: prewash > tunnel > dry
+  Premium   weight 20, priority 3, route: prewash > tunnel > wax > dry
+Cars: 40, arrival every 2-6 min, working day: 240 min
+Failures: p=0.010 per post per minute, repair 5-15 min
+Priority rule: fifo, seed: 1
+Mode: threads in parallel
+
+[08:00] car #1 arrives at the entrance
+[08:00] car #1 chooses Standard (prewash > tunnel > dry)
+[08:00] car #1 enters prewash post 1
+[08:00] prewash post 1 starts on car #1 Standard (5 min)
+==================
+WARNING: ThreadSanitizer: data race (pid=39589)
+  Write of size 8 at 0x0001042cf030 by thread T3:
+    #0 RacyTick post.c:89 (carwash-mon-tsan:arm64+0x10000e950)
+    #1 PostMain post.c:102 (carwash-mon-tsan:arm64+0x10000e888)
+
+  Previous write of size 8 at 0x0001042cf030 by thread T6:
+    #0 RacyTick post.c:89 (carwash-mon-tsan:arm64+0x10000e950)
+    #1 PostMain post.c:102 (carwash-mon-tsan:arm64+0x10000e888)
+
+  Location is global 'main.line' at 0x0001042cb708 (carwash-mon-tsan+0x100033030)
+
+  Thread T3 (tid=16022064, running) created by main thread at:
+    #0 pthread_create <null> (libclang_rt.tsan_osx_dynamic.dylib:arm64e+0x33bac)
+    #1 ThreadCreate thread.c:27 (carwash-mon-tsan:arm64+0x100019ab4)
+    #2 Spawn main.c:198 (carwash-mon-tsan:arm64+0x100002824)
+    #3 RunModel main.c:234 (carwash-mon-tsan:arm64+0x1000025a4)
+    #4 main main.c:362 (carwash-mon-tsan:arm64+0x1000017a0)
+
+  Thread T6 (tid=16022067, running) created by main thread at:
+    #0 pthread_create <null> (libclang_rt.tsan_osx_dynamic.dylib:arm64e+0x33bac)
+    #1 ThreadCreate thread.c:27 (carwash-mon-tsan:arm64+0x100019ab4)
+    #2 Spawn main.c:198 (carwash-mon-tsan:arm64+0x100002824)
+    #3 RunModel main.c:234 (carwash-mon-tsan:arm64+0x1000025a4)
+    #4 main main.c:362 (carwash-mon-tsan:arm64+0x1000017a0)
+
+SUMMARY: ThreadSanitizer: data race post.c:89 in RacyTick
+==================
+[exit code 66]

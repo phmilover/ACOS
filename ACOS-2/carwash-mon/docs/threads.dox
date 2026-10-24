@@ -1,0 +1,200 @@
+/**
+@page threads Потоки и синхронизация
+
+Модель многопоточная: у каждой сущности свой поток pthread. Все потоки модели (координатор,
+машины, посты) ходят по виртуальным часам (@ref sim.h): в каждый момент поток либо работает,
+либо ждёт. Стрелка часов двигается только в момент покоя, когда никто не работает и запускать
+некого. Поэтому результат не зависит от скорости компьютера, а режим `-D` даёт побайтно
+одинаковый журнал. Ни одного семафора в программе нет: потоки взаимодействуют мониторами
+(мьютекс и условные переменные), `pthread_rwlock`, барьером старта и атомарными счётчиками.
+
+@section threads_who Потоки и кто кого будит
+
+Сплошная стрелка - создание и сбор потока (pthread_create / pthread_join), пунктирная -
+пробуждение через условную переменную, точечная - передача данных. Участники барьера старта
+(посты, координатор, часы и main) выделены цветом.
+
+@dot
+digraph threads {
+  rankdir=LR;
+  node [fontname="Helvetica", fontsize=10, shape=box, style=rounded];
+  edge [fontname="Helvetica", fontsize=9];
+
+  main    [label="main\nключи, конфиг, итоги", style="rounded,filled", fillcolor="#e8f0fe"];
+  clock   [label="clock\nSimClockMain", style="rounded,filled", fillcolor="#e8f0fe"];
+  coord   [label="coordinator\nприбытия, закрытие въезда", style="rounded,filled", fillcolor="#e8f0fe"];
+  post    [label="post (по потоку на пост)\nPostMain", style="rounded,filled", fillcolor="#e8f0fe"];
+  car     [label="car #N (по потоку на машину)\nCarMain"];
+  signals [label="signals\nsigwait"];
+  render  [label="render\nкадры живой схемы"];
+
+  main -> signals [label="create/join\n(первым)"];
+  main -> render  [label="create/join"];
+  main -> post    [label="create/join"];
+  main -> coord   [label="create/join"];
+  main -> clock   [label="create/join"];
+  coord -> car    [label="create (по прибытию)\njoin (уехавших)"];
+
+  clock -> car    [style=dashed, label="запуск: личная cv"];
+  clock -> post   [style=dashed, label="запуск: личная cv"];
+  clock -> coord  [style=dashed, label="запуск: личная cv"];
+  post -> car     [style=dashed, label="done: конец операции;\nпосле ремонта: seatFree / room"];
+  car -> car      [style=dashed, label="seatFree / room:\nместо освободилось"];
+  car -> coord    [style=dashed, label="decided: последняя\nмашина дня"];
+  signals -> clock [style=dashed, label="SimKick"];
+  clock -> render [style=dotted, label="RenderSubmit(снимок)"];
+}
+@enddot
+
+Что защищает общие данные:
+- стадия (очередь, посты, ожидающие) - монитор: её мьютекс `RANK_STAGE`, мьютексы стадий не
+  вкладываются;
+- вход и конец дня - монитор `entrance` (`RANK_ENTRANCE`) с условной переменной `decided`;
+- реестр машин - `pthread_rwlock` `registry` (`RANK_REGISTRY`): пишет один координатор, читают
+  многие;
+- часы - свой мьютекс (`RANK_SIM`), буфер кадров - `RANK_RENDER`, шина событий - `RANK_BUS`,
+  вывод - `RANK_OUT`;
+- счётчики линии (`inside`, `served`, `alive`, `nextTicket`, ...) - атомики C11.
+
+Порядок захвата проверяет LOCKDEP (@ref sync.h): мьютекс или rwlock можно брать только с рангом
+больше уже удерживаемых. Поле, которое охраняет мьютекс, помечено `GUARDED_BY`, и компилятор
+(Thread Safety Analysis) не даёт тронуть его без захвата.
+
+@section threads_stage Монитор стадии: кто ждёт какое условие и кто будит
+
+У стадии три вида условных переменных, и все они работают с мьютексом стадии (@ref stage.h):
+`seatFree` - машины очереди ждут места на посту; `room` - машины с других стадий ждут места
+(бронь); `done` у каждого поста - машины на его местах ждут конца операции. Ждёт поток в
+`SimWaitOn`, а выйти из ожидания ему разрешает тот, кто будит: под мьютексом стадии он сначала
+отмечает каждого ждущего работающим (`SimGrant`), потом зовёт `CondBroadcast`. Поэтому часы не
+могут перевести стрелку, пока разбуженный не успел проснуться.
+
+Освободивший место никого не выбирает. Он будит ждущих условия только тогда, когда предикат
+хоть одного из них действительно стал истинным (WakeWaiting: в очереди есть машины и есть
+свободное место на исправном посту; есть ожидающие и есть место для них); тогда выход
+разрешают всем ждущим этого условия, а не одному. Каждый проснувшийся
+сам проверяет в цикле `while`, его ли очередь (`StageQueueTurn`, `StageRoomTurn`: лучшая по
+правилу приоритета, при равных - кто раньше встал; для ожидающих порядок - номер `ticket`).
+Лишние пробуждения безвредны: не его очередь - снова `SimWaitOn`. Пост по концу операции
+будит только тех, чья операция закончилась (`left == 0`).
+
+Окно отказа на входе: машина с улицы получает отказ, если кто-то ждёт места (`waiters > 0`),
+даже когда место только что освободилось, а разбуженный ожидающий его ещё не занял. Окно
+короткое и такое же, как в `carwash-mt`.
+
+@dot
+digraph stage {
+  rankdir=TB;
+  node [fontname="Helvetica", fontsize=10, shape=box, style=rounded];
+  edge [fontname="Helvetica", fontsize=9];
+
+  op   [label="Машина A закончила операцию\n(пост разбудил её через done)"];
+  rsv  [label="StageReserve на следующей стадии\n(мьютекс следующей)"];
+  wait [label="нет места: ticket = ++nextTicket,\nEV_BLOCKED; while (StageRoomTurn == RES_NONE)\nSimWaitOn(room, WAIT_ROOM)", shape=box];
+  have [label="бронь есть (RES_SEAT / RES_QUEUE)"];
+  vac  [label="StageVacate на текущей стадии\n(мьютекс текущей): EV_LEAVE"];
+  wk1  [label="WakeWaiting: SimGrant + CondBroadcast\nвсем ждущим условия, если предикат\nхоть одного истинен (seatFree / room)", style="rounded,filled", fillcolor="#e8f0fe"];
+  com  [label="StageCommit на следующей стадии\n(мьютекс следующей): EV_MOVE,\nEV_ENTER или EV_QUEUE, EV_OP_START"];
+  seat [label="Машина B из очереди проснулась:\nwhile (!StageQueueTurn) SimWaitOn(seatFree);\nсама садится на пост: EV_ENTER, EV_OP_START"];
+
+  op -> rsv;
+  rsv -> wait [label="нет"];
+  wait -> rsv [label="разбудили: room", style=dashed];
+  rsv -> have [label="есть"];
+  have -> vac;
+  vac -> wk1;
+  wk1 -> seat [style=dashed, label="seatFree"];
+  wk1 -> wait [style=dashed, label="room"];
+  vac -> com [label="мьютексы не вложены"];
+}
+@enddot
+
+Пост ждёт не условие, а время: его поток спит минуту (`SimSleep`), под мьютексом стадии
+уменьшает `left` у машин и по окончании операции зовёт `StageWakePost` (`SimGrant` каждой
+машине поста и `CondBroadcast(done)`). Починившийся пост будит `seatFree` и `room`
+(`StageRepaired`).
+
+@section threads_clock Часы: монитор покоя
+
+Поток часов ждёт на условной переменной `quiet` (под мьютексом часов `RANK_SIM`), пока число
+работающих не станет нулём и очередь запуска не опустеет. Каждый поток модели спит и ждёт
+запуска на личной условной переменной (`SimThread.cv`) - тоже под мьютексом часов, поэтому
+будить можно точно одного. Проснувшись, часы вызывают крючок (@ref quiesce.h): состояние
+модели в этот момент устойчиво, и там берутся снимок для живой схемы, выборка для Ганта,
+обрабатываются сигналы и ищется тупик. Затем стрелка переводится на ближайшую минуту, запускаются
+все, кому пора, и цикл повторяется.
+
+@dot
+digraph clock {
+  rankdir=TB;
+  node [fontname="Helvetica", fontsize=10, shape=box, style=rounded];
+  edge [fontname="Helvetica", fontsize=9];
+
+  wait  [label="CondWait(quiet)\nчасы спят"];
+  quiet [label="покой?\nrunning == 0 и очередь запуска пуста", shape=diamond, style=""];
+  hook  [label="крючок QuiesceHook (мьютекс часов не держим):\nснимок, Гант, сигналы, поиск тупика"];
+  go    [label="продолжать?", shape=diamond, style=""];
+  stop  [label="SimStop: разбудить всех,\nвсе Sim* возвращают SIM_STOP"];
+  adv   [label="now = ближайшее пробуждение;\nCondSignal(cv) каждому, кому пора"];
+  run   [label="потоки модели работают\nи ждут (SimSleep / SimWaitOn)", style="rounded,filled", fillcolor="#e8f0fe"];
+
+  wait -> quiet;
+  quiet -> wait [label="нет"];
+  quiet -> hook [label="да"];
+  hook -> go;
+  go -> stop [label="нет"];
+  go -> adv  [label="да"];
+  adv -> run;
+  run -> wait [label="последний остановился:\nCondSignal(quiet)"];
+}
+@enddot
+
+Тот, кто разрешает потоку выйти из ожидания (`SimGrant`, `SimSpawned`), увеличивает число
+работающих сразу, а не когда поток проснётся, поэтому часы не проскакивают. Разрешили поток
+извне во время крючка - он встаёт в очередь запуска, а время не двигается: часы дождутся
+следующего покоя. `SimKick` просит часы вызвать крючок ещё раз в ту же минуту: так поток
+сигналов передаёт часам запрос, не трогая модель. В режиме `-D` работает не больше одного
+потока: остальные разрешённые встают в очередь FIFO и получают жетон по одному.
+
+@section threads_barrier Барьер старта
+
+Модель начинается, только когда созданы все участники: посты, координатор, часы и main
+(посты + 3 участников; на встроенной конфигурации 9). Каждый создаётся через `ThreadCreate`
+и первым делом ждёт на барьере `Line.start` (@ref barrier.h), main приходит на него последним,
+создав всех. На macOS `pthread_barrier_t` нет, барьер собран на мьютексе и условной переменной
+со счётчиком поколений (`BarrierKind()` называет реализацию). Последний пришедший будит всех
+через `CondBroadcast`; ложное пробуждение ожидающий переживает, потому что ждёт смены поколения,
+а не значения счётчика. Не создался один из участников - барьер не отпустить: main печатает
+причину и выходит с кодом 5 без итогов.
+
+@dot
+digraph barrier {
+  rankdir=LR;
+  node [fontname="Helvetica", fontsize=10, shape=box, style=rounded];
+  edge [fontname="Helvetica", fontsize=9];
+
+  post  [label="посты ×N\nBarrierWait, затем SimBegin"];
+  coord [label="coordinator\nBarrierWait, затем SimBegin"];
+  clock [label="clock\nBarrierWait, затем покой"];
+  main  [label="main\nсоздал всех,\nBarrierWait, затем join"];
+  bar   [label="Barrier start\narrived == count:\ngeneration++, CondBroadcast", shape=box, style="rounded,filled", fillcolor="#e8f0fe"];
+
+  post -> bar;
+  coord -> bar;
+  clock -> bar;
+  main -> bar;
+  bar -> post  [style=dashed, label="поколение сменилось"];
+  bar -> coord [style=dashed];
+  bar -> clock [style=dashed];
+  bar -> main  [style=dashed];
+}
+@enddot
+
+@section threads_render Кадры живой схемы
+
+Часы в крючке кладут снимок (`RenderSubmit`), поток отрисовки рисует его. Это монитор
+«ограниченный буфер» из двух буферов по кругу (@ref render.h): `notFull` (есть пустой буфер),
+`notEmpty` (есть кадр), `drained` (все отданные кадры нарисованы). Рисует поток уже без
+мьютекса и только потом возвращает буфер, поэтому медленный терминал притормаживает часы не
+больше чем на кадр.
+*/
