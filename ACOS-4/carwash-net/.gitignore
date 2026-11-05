@@ -1,0 +1,4 @@
+bin/
+bin-asan/
+logs/
+*.log
