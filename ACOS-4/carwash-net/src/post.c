@@ -105,9 +105,9 @@ int main(int argc, char **argv) {
         if (o != GO_ON) {
             break;
         }
-        if (strcmp(line, "OPEN") == 0) {
+        if (sscanf(line, "OPEN %d", &now) == 1) {
+            SessionSync(&ses, now);
             if (!open) {
-                SessionSync(&ses, 0);
                 EVENT(C_COORD, "entrance opened, ready for cars");
             }
             open = 1;

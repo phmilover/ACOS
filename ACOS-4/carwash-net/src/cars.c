@@ -41,10 +41,11 @@ static Outcome Handle(int r, const char *line) {
     char program[NAME_LEN + 4], status[16], who[24];
     if (strncmp(line, "STOP ", 5) == 0) {
         return GO_STOP;
-    } else if (strcmp(line, "OPEN") == 0) {
+    } else if (sscanf(line, "OPEN %d", &minutes) == 1) {
+        SessionSync(&ses, minutes);  // OPEN несёт текущую минуту: въезд мог открыться давно
         if (!isOpen) {
-            SessionSync(&ses, 0);
-            EVENT("entrance", C_COORD, "entrance opened, cars start arriving");
+            EVENT("entrance", C_COORD, "%s", minutes ? "the entrance is open, cars keep arriving"
+                                                      : "entrance opened, cars start arriving");
         }
         isOpen = 1;
     } else if (strcmp(line, "CLOSED") == 0) {

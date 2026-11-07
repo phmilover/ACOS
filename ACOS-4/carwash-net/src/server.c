@@ -330,7 +330,7 @@ static void OpenEntranceIfReady(void) {
                  "all %d posts and the car source are online, entrance opened", postsOnline);
         for (int i = 0; i < MAX_CLIENTS; ++i) {
             if (cl[i].io.fd >= 0 && cl[i].role != ROLE_NEW) {
-                Send(i, "OPEN");
+                Send(i, "OPEN 0");
             }
         }
     }
@@ -401,7 +401,7 @@ static void HelloPost(int c, const char *stageName, int number) {
                 cl[c].pid, postsOnline, ConfigTotalPosts(&st.cfg));
     }
     if (wasOpen) {
-        Send(c, "OPEN");
+        Send(c, "OPEN %d", StNow(&st));
     } else {
         OpenEntranceIfReady();
     }
@@ -428,7 +428,7 @@ static void HelloCars(int c) {
     if (st.startNs) {
         OutEvent(StNow(&st), "entrance", cl[c].pid, C_FIX, "car source is back online from %s",
                  cl[c].addr);
-        Send(c, "OPEN");
+        Send(c, "OPEN %d", StNow(&st));
         if (st.closed) {
             Send(c, "CLOSED");
         }

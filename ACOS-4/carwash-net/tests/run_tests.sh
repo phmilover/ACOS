@@ -166,8 +166,9 @@ else
 fi
 if grep -q "car source .*no new cars" "$TMP/r.log" && grep -q "car source is back online" "$TMP/r.log" &&
     grep -q "still to come" "$TMP/cars-again.out" &&
+    ! grep -q '^\[08:0.\] entrance' "$TMP/cars-again.out" &&
     [ "$(grep -c "arrives, chooses" "$TMP/r.log")" = 40 ]; then
-    ok "the car source leaves and returns, the day still has exactly 40 cars"
+    ok "the car source leaves and returns with the right clock, the day still has exactly 40 cars"
 else
     bad "car source reconnect: $(grep -c "arrives, chooses" "$TMP/r.log") cars" "$TMP/cars-again.out"
 fi
