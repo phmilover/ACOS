@@ -81,18 +81,18 @@ int main(int argc, char **argv) {
         return 1;
     }
     char stage[NAME_LEN + 4];
-    int num, tmin, tmax, rmin, rmax, now, open;
+    int num, tmin, tmax, rmin, rmax, now, open, stageNo;
     unsigned seed;
     double failP;
-    if (sscanf(line, "WELCOME post %15s %d %d %d %lf %d %d %u %d %d %d", stage, &num, &tmin,
-               &tmax, &failP, &rmin, &rmax, &seed, &ses.delayMs, &now, &open) != 11) {
+    if (sscanf(line, "WELCOME post %15s %d %d %d %lf %d %d %u %d %d %d %d", stage, &num, &tmin,
+               &tmax, &failP, &rmin, &rmax, &seed, &ses.delayMs, &now, &open, &stageNo) != 12) {
         dprintf(2, "cw-post: unexpected answer: %s\n", line);
         return 5;
     }
     SessionSync(&ses, now);
     snprintf(who, sizeof(who), "%s.%d", stage, num);
     Rng rng;
-    RngInit(&rng, seed, 100U + (unsigned)(num * 31 + (int)stage[0]));
+    RngInit(&rng, seed, 100U + (unsigned)(stageNo * MAX_POSTS + num - 1));
     dprintf(1, "cw-post: post %s is online at %s:%d (pid %d), operation %d-%d min, %s\n", who,
             argv[1], port, (int)getpid(), tmin, tmax,
             open ? "the line is working" : "waiting for the entrance to open");

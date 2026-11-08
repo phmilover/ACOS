@@ -130,11 +130,11 @@ int main(int argc, char **argv) {
     if (SessionOpen(&ses, "cw-cars", argv[1], port, 15, hello, line, sizeof(line)) != 0) {
         return 1;
     }
-    int arrMin, arrMax, remaining, now, off;
+    int arrMin, arrMax, remaining, now, nextId, off;
     unsigned seed;
     ConfigDefaults(&cfg);
-    if (sscanf(line, "WELCOME cars %d %d %d %u %d %d %d %n", &arrMin, &arrMax, &remaining, &seed,
-               &ses.delayMs, &now, &cfg.programs, &off) != 7 ||
+    if (sscanf(line, "WELCOME cars %d %d %d %u %d %d %d %d %n", &arrMin, &arrMax, &remaining,
+               &seed, &ses.delayMs, &now, &nextId, &cfg.programs, &off) != 8 ||
         cfg.programs < 1 || cfg.programs > MAX_PROGRAMS) {
         dprintf(2, "cw-cars: unexpected answer: %s\n", line);
         return 5;
@@ -164,7 +164,10 @@ int main(int argc, char **argv) {
         if (o != GO_ON || closed) {
             break;
         }
-        NetSend(ses.io.fd, "ARRIVE %d", StChooseProgram(&cfg, &rng));
+        // программу машина выбирает по своей последовательности (номер машины - как в ИЗ3)
+        Rng carRng;
+        RngInit(&carRng, seed, 1000U + (unsigned)(nextId + sent));
+        NetSend(ses.io.fd, "ARRIVE %d", StChooseProgram(&cfg, &carRng));
         ++sent;
         if (remaining > 0 && --remaining == 0) {
             NetSend(ses.io.fd, "CLOSE %d", sent);

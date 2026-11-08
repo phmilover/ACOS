@@ -52,6 +52,9 @@ static int bindPort;
 
 static int postClient[MAX_STAGES][MAX_POSTS];  ///< клиент поста или -1 (пост не в сети)
 static int opRunning[MAX_STAGES][MAX_POSTS];   ///< пост выполняет операцию над своей машиной
+/// Пост сказал, что ждёт машину (подключился свободным или прислал IDLE). Только такой пост
+/// получает SERVE: после REPAIR пост свободен, но его IDLE ещё в пути.
+static int postReady[MAX_STAGES][MAX_POSTS];
 static int sourceClient = -1;
 static int postsOnline = 0;
 
@@ -248,7 +251,7 @@ static void Dispatch(int stage) {
     for (int p = 0; p < st.cfg.stage[stage].posts; ++p) {
         PostSlot *ps = &st.post[stage][p];
         if (ps->state != POST_IDLE || ps->car >= 0 || postClient[stage][p] < 0 ||
-            !StHasWaiting(&st, stage)) {
+            !postReady[stage][p] || !StHasWaiting(&st, stage)) {
             continue;
         }
         int queueFreed, prevStage, prevPost;
@@ -256,6 +259,7 @@ static void Dispatch(int stage) {
         if (prevPost >= 0) {
             SendFree(prevStage, prevPost, st.car[car].id);
         }
+        postReady[stage][p] = 0;
         Send(postClient[stage][p], "SERVE %d %s", st.car[car].id,
              st.cfg.program[st.car[car].program].name);
         if (queueFreed) {
@@ -379,9 +383,10 @@ static void HelloPost(int c, const char *stageName, int number) {
     int wasBroken = ps->state == POST_BROKEN;
     ps->pid = cl[c].pid;
     ps->state = ps->car >= 0 ? POST_BUSY : POST_IDLE;
-    Send(c, "WELCOME post %s %d %d %d %.4f %d %d %u %d %d %d", spec->name, number, spec->tmin,
+    postReady[s][p] = ps->car < 0;
+    Send(c, "WELCOME post %s %d %d %d %.4f %d %d %u %d %d %d %d", spec->name, number, spec->tmin,
          spec->tmax, st.cfg.failP, st.cfg.repairMin, st.cfg.repairMax, st.cfg.seed,
-         st.cfg.delayMs, st.startNs ? StNow(&st) : 0, st.startNs != 0);
+         st.cfg.delayMs, st.startNs ? StNow(&st) : 0, st.startNs != 0, s);
 
     char who[24];
     StPostName(&st, s, p, who, sizeof(who));
@@ -417,9 +422,9 @@ static void HelloCars(int c) {
     sourceClient = c;
     int remaining = st.cfg.cars > 0 ? st.cfg.cars - st.st.arrived : -1;
     char line[LINE_MAX_LEN];
-    int n = snprintf(line, sizeof(line), "WELCOME cars %d %d %d %u %d %d %d", st.cfg.arrMin,
+    int n = snprintf(line, sizeof(line), "WELCOME cars %d %d %d %u %d %d %d %d", st.cfg.arrMin,
                      st.cfg.arrMax, remaining, st.cfg.seed, st.cfg.delayMs,
-                     st.startNs ? StNow(&st) : 0, st.cfg.programs);
+                     st.startNs ? StNow(&st) : 0, st.nextId, st.cfg.programs);
     for (int i = 0; i < st.cfg.programs && n < (int)sizeof(line); ++i) {
         n += snprintf(line + n, sizeof(line) - n, " %s %d", st.cfg.program[i].name,
                       st.cfg.program[i].weight);
@@ -497,6 +502,7 @@ static void DropClient(int c, const char *why) {
         int s = k->stage, p = k->post;
         postClient[s][p] = -1;
         --postsOnline;
+        postReady[s][p] = 0;
         PostSlot *ps = &st.post[s][p];
         ps->state = POST_OFF;
         char who[24], extra[64] = "";
@@ -543,6 +549,7 @@ static void OnPost(int c, const char *line) {
         StRepair(&st, s, p);
     } else if (strcmp(line, "IDLE") == 0) {
         StPostFree(&st, s, p);
+        postReady[s][p] = 1;
         Dispatch(s);
     }
 }
