@@ -346,7 +346,7 @@ int ConfigFromArgs(Config *c, int argc, char **argv, const char *extra,
         switch (opt) {
         case 'c': break;  // файл уже прочитан
         case 's': {
-            int seed;
+            int seed = 0;
             bad = ParseInt(optarg, &seed);
             c->seed = (unsigned)seed;
             break;

@@ -24,14 +24,15 @@
 #include <unistd.h>
 
 #include "net.h"
+#include "soft_assert.h"
 #include "state.h"
 #include "util.h"
 
-#define MAX_CLIENTS     64
+#define MAX_CLIENTS      64
 #define LEAVE_TIMEOUT_MS 3000  ///< сколько ждать отключения клиентов после STOP
-#define SNAP_EVERY_MS   100    ///< не чаще - снимки наблюдателям
-#define SNAP_IDLE_MS    500    ///< не реже - чтобы часы у наблюдателей шли
-#define RECENT_EVENTS   14     ///< сколько последних событий получает новый наблюдатель
+#define SNAP_EVERY_MS    100   ///< не чаще - снимки наблюдателям
+#define SNAP_IDLE_MS     500   ///< не реже - чтобы часы у наблюдателей шли
+#define RECENT_EVENTS    14    ///< сколько последних событий получает новый наблюдатель
 
 typedef enum { ROLE_NEW, ROLE_POST, ROLE_CARS, ROLE_VIEW } Role;
 
@@ -104,6 +105,11 @@ static void Send(int c, const char *fmt, ...) {
 
 /// Посту: машина @p carId съехала, пост свободен.
 static void SendFree(int stage, int post, int carId) {
+    if (!SOFT_ASSERT(stage >= 0 && stage < st.cfg.stages && post >= 0 &&
+                         post < st.cfg.stage[stage].posts,
+                     "FREE for a post that does not exist")) {
+        return;
+    }
     if (postClient[stage][post] >= 0) {
         Send(postClient[stage][post], "FREE %d", carId);
     }
@@ -114,7 +120,7 @@ static char ColorLetter(const char *color) {
     static const struct {
         const char *c;
         char l;
-    } map[] = {{C_CAR, 'c'}, {C_WAIT, 'w'}, {C_FAIL, 'f'}, {C_FIX, 'x'},
+    } map[] = {{C_CAR, 'c'},  {C_WAIT, 'w'},  {C_FAIL, 'f'}, {C_FIX, 'x'},
                {C_DONE, 'd'}, {C_COORD, 'k'}, {C_POST, 'p'}};
     for (unsigned i = 0; i < sizeof(map) / sizeof(map[0]); ++i) {
         if (strcmp(color, map[i].c) == 0) {
@@ -161,7 +167,8 @@ static int QueueIds(int stage, char *buf, int size) {
     int len = 0;
     buf[0] = '\0';
     for (int i = 0; i < n && len < size; ++i) {
-        len += snprintf(buf + len, size - len, " %d:%d", st.car[slots[i]].id, st.car[slots[i]].program);
+        len += snprintf(buf + len, size - len, " %d:%d", st.car[slots[i]].id,
+                        st.car[slots[i]].program);
     }
     return n;
 }
@@ -169,11 +176,11 @@ static int QueueIds(int stage, char *buf, int size) {
 /// Снимок состояния одной пачкой строк: SNAP, Q на стадию, P на пост, END.
 static void SendSnapshot(int c) {
     char out[NET_BUF];
-    int n = snprintf(out, sizeof(out), "SNAP %d %d %d %d %d %d %d %d %d %d %d %d %d\n",
-                     st.startNs ? StNow(&st) : 0, st.startNs != 0, st.closed, st.active,
-                     st.st.arrived, st.st.accepted, st.st.finished, st.st.turned, st.st.refused,
-                     sourceClient >= 0, ClientCount(ROLE_VIEW), stopping != STOP_NONE,
-                     st.violations);
+    int n =
+        snprintf(out, sizeof(out), "SNAP %d %d %d %d %d %d %d %d %d %d %d %d %d\n",
+                 st.startNs ? StNow(&st) : 0, st.startNs != 0, st.closed, st.active, st.st.arrived,
+                 st.st.accepted, st.st.finished, st.st.turned, st.st.refused, sourceClient >= 0,
+                 ClientCount(ROLE_VIEW), stopping != STOP_NONE, st.violations);
     for (int s = 0; s < st.cfg.stages && n < (int)sizeof(out); ++s) {
         char ids[400];
         int len = QueueIds(s, ids, sizeof(ids));
@@ -191,8 +198,8 @@ static void SendSnapshot(int c) {
                 wait = blockedFor[ps->car] >= 0 ? blockedFor[ps->car] : car->waitStage;
             }
             n += snprintf(out + n, sizeof(out) - n, "P %d %d %s %d %d %d %d %d %d %d\n", s, p,
-                          stateWord[ps->state], postClient[s][p] >= 0, id, program,
-                          opRunning[s][p], wait, ps->ops, ps->fails);
+                          stateWord[ps->state], postClient[s][p] >= 0, id, program, opRunning[s][p],
+                          wait, ps->ops, ps->fails);
         }
     }
     if (n < (int)sizeof(out) - 5) {
@@ -218,7 +225,9 @@ static void BroadcastSnapshot(void) {
 static void Dispatch(int stage);
 
 /// Машина уходит к следующей стадии маршрута (место в накопителе уже есть).
-static void MoveOn(int slot) {
+/// Dispatch -> MoveOn -> Unblock -> MoveOn: цепочка рекурсивна, но каждый шаг двигает машину
+/// по маршруту дальше, так что глубина ограничена длиной маршрута и числом машин.
+static void MoveOn(int slot) {  // NOLINT(misc-no-recursion)
     CarSlot *c = &st.car[slot];
     int from = c->stage;
     int freed = StMoveOn(&st, slot);
@@ -229,7 +238,7 @@ static void MoveOn(int slot) {
 }
 
 /// В накопителе стадии освободилось место: первой туда едет машина, дольше всех ждущая его.
-static void Unblock(int stage) {
+static void Unblock(int stage) {  // NOLINT(misc-no-recursion)
     int best = -1;
     for (int i = 0; i < MAX_SLOTS; ++i) {
         if (st.car[i].state != CAR_FREE && blockedFor[i] == stage &&
@@ -244,7 +253,7 @@ static void Unblock(int stage) {
 }
 
 /// Свободные посты стадии, клиенты которых в сети, забирают ожидающие машины.
-static void Dispatch(int stage) {
+static void Dispatch(int stage) {  // NOLINT(misc-no-recursion)
     if (stopping) {
         return;
     }
@@ -385,8 +394,8 @@ static void HelloPost(int c, const char *stageName, int number) {
     ps->state = ps->car >= 0 ? POST_BUSY : POST_IDLE;
     postReady[s][p] = ps->car < 0;
     Send(c, "WELCOME post %s %d %d %d %.4f %d %d %u %d %d %d %d", spec->name, number, spec->tmin,
-         spec->tmax, st.cfg.failP, st.cfg.repairMin, st.cfg.repairMax, st.cfg.seed,
-         st.cfg.delayMs, st.startNs ? StNow(&st) : 0, st.startNs != 0, s);
+         spec->tmax, st.cfg.failP, st.cfg.repairMin, st.cfg.repairMax, st.cfg.seed, st.cfg.delayMs,
+         st.startNs ? StNow(&st) : 0, st.startNs != 0, s);
 
     char who[24];
     StPostName(&st, s, p, who, sizeof(who));
@@ -446,8 +455,8 @@ static void HelloCars(int c) {
 static void HelloView(int c) {
     cl[c].role = ROLE_VIEW;
     const Config *cfg = &st.cfg;
-    Send(c, "WELCOME view %d %d %d %d %d %s %s:%d", cfg->stages, cfg->programs, cfg->day,
-         cfg->cars, cfg->delayMs, ConfigRuleName(cfg->rule), bindIp, bindPort);
+    Send(c, "WELCOME view %d %d %d %d %d %s %s:%d", cfg->stages, cfg->programs, cfg->day, cfg->cars,
+         cfg->delayMs, ConfigRuleName(cfg->rule), bindIp, bindPort);
     for (int s = 0; s < cfg->stages; ++s) {
         const StageSpec *sp = &cfg->stage[s];
         Send(c, "STAGE %d %s %d %d %d %d", s, sp->name, sp->posts, sp->queue, sp->tmin, sp->tmax);
@@ -517,8 +526,8 @@ static void DropClient(int c, const char *why) {
     } else if (k->role == ROLE_CARS) {
         sourceClient = -1;
         if (!stopping) {
-            OutEvent(now, "entrance", k->pid, C_FAIL,
-                     "car source %s: no new cars until it is back", why);
+            OutEvent(now, "entrance", k->pid, C_FAIL, "car source %s: no new cars until it is back",
+                     why);
         }
     } else if (k->role == ROLE_VIEW && !stopping) {
         dprintf(1, "viewer %s left (%s), viewers online %d\n", k->addr, why,
@@ -574,8 +583,7 @@ static void OnCars(int c, const char *line) {
         const ProgramSpec *prog = &st.cfg.program[program];
         int first = prog->route[0];
         int dead = ConfigDeadStage(&st.cfg, program);
-        int room = st.cfg.stage[first].queue > 0 &&
-                   st.queueLen[first] < st.cfg.stage[first].queue;
+        int room = st.cfg.stage[first].queue > 0 && st.queueLen[first] < st.cfg.stage[first].queue;
         int id = st.car[slot].id;
         if (StArrive(&st, slot, program, cl[c].pid, dead < 0 && room)) {
             blockedFor[slot] = -1;
@@ -688,17 +696,16 @@ static int ClientsLeft(void) {
 }
 
 static void Usage(int fd) {
-    dprintf(fd,
-            "Usage: cw-server [-c FILE] [-s SEED] [-d MS] [-l FILE] [-u] [-q] IP PORT\n"
-            "  IP    interface to listen on: 127.0.0.1 - this computer only, 0.0.0.0 - all\n"
-            "  PORT  TCP port, e.g. 5050\n"
-            "Then start, in any order, on this or other computers:\n"
-            "  cw-post SERVER PORT STAGE N   one client per post\n"
-            "  cw-cars SERVER PORT           the car source\n"
-            "  cw-view SERVER PORT           a viewer, as many as you like\n"
-            "or scripts/run.sh to start everything here at once.\n"
-            "Signals: SIGINT/SIGTERM stop the line and all clients, SIGUSR1 prints the state,\n"
-            "SIGUSR2 closes the entrance early.\n");
+    dprintf(fd, "Usage: cw-server [-c FILE] [-s SEED] [-d MS] [-l FILE] [-u] [-q] IP PORT\n"
+                "  IP    interface to listen on: 127.0.0.1 - this computer only, 0.0.0.0 - all\n"
+                "  PORT  TCP port, e.g. 5050\n"
+                "Then start, in any order, on this or other computers:\n"
+                "  cw-post SERVER PORT STAGE N   one client per post\n"
+                "  cw-cars SERVER PORT           the car source\n"
+                "  cw-view SERVER PORT           a viewer, as many as you like\n"
+                "or scripts/run.sh to start everything here at once.\n"
+                "Signals: SIGINT/SIGTERM stop the line and all clients, SIGUSR1 prints the state,\n"
+                "SIGUSR2 closes the entrance early.\n");
 }
 
 static int OnExtra(int opt, const char *arg) {
@@ -769,7 +776,7 @@ int main(int argc, char **argv) {
         HandleSignals();  // сигнал мог прийти вне poll - тогда EINTR не будет
         Tick();
         if (stopping && leaveDeadline == 0) {
-            leaveDeadline = NowNs() + LEAVE_TIMEOUT_MS * 1000000LL;
+            leaveDeadline = NowNs() + (LEAVE_TIMEOUT_MS * 1000000LL);
         }
         if (stopping && (ClientsLeft() == 0 || NowNs() > leaveDeadline)) {
             break;

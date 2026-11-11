@@ -16,7 +16,7 @@ volatile sig_atomic_t gotClose = 0;
 static int journal = -1;
 static int quietScreen = 0;
 static int color = 0;
-static OutHook hook = NULL;
+static OutHook outHook = NULL;
 
 static void OnSignal(int sig) {
     if (sig == SIGUSR1) {
@@ -45,7 +45,7 @@ void SignalsInstall(void) {
 long long NowNs(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (long long)ts.tv_sec * 1000000000LL + ts.tv_nsec;
+    return ((long long)ts.tv_sec * 1000000000LL) + ts.tv_nsec;
 }
 
 int ModelMinute(long long startNs, int delayMs) {
@@ -55,7 +55,7 @@ int ModelMinute(long long startNs, int delayMs) {
 
 void FormatClock(int minute, char *buf, int size) {
     int t = DAY_START + minute;
-    int day = t / (24 * 60) + 1;
+    int day = (t / (24 * 60)) + 1;
     if (day == 1) {
         snprintf(buf, size, "%02d:%02d", t / 60, t % 60);
     } else {
@@ -109,8 +109,8 @@ void OutInit(int journalFd, int quiet) {
     color = isatty(1);
 }
 
-void OutSetHook(OutHook fn) {
-    hook = fn;
+void OutSetHook(OutHook hook) {
+    outHook = hook;
 }
 
 int OutJournal(void) {
@@ -132,9 +132,9 @@ void OutEvent(int minute, const char *who, int pid, const char *col, const char 
     if (journal >= 0) {
         WriteAll(journal, line, (size_t)n);
     }
-    if (hook) {
+    if (outHook) {
         line[n - 1] = '\0';
-        hook(line, col);
+        outHook(line, col);
         line[n - 1] = '\n';
     }
     if (!quietScreen) {
@@ -160,9 +160,9 @@ void OutLine(const char *fmt, ...) {
     if (n >= (int)sizeof(line) - 1) {
         n = (int)sizeof(line) - 2;
     }
-    if (hook) {
+    if (outHook) {
         line[n] = '\0';
-        hook(line, "");
+        outHook(line, "");
     }
     line[n++] = '\n';
     WriteAll(1, line, (size_t)n);

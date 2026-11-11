@@ -1,0 +1,19 @@
+# Doxygen: cmake --build build --target docs, открыть build/doxygen/html/index.html
+PROJECT_NAME           = "Автомойка по сети (вариант 43)"
+OUTPUT_DIRECTORY       = build/doxygen
+OUTPUT_LANGUAGE        = Russian
+INPUT                  = README.md include src
+FILE_PATTERNS          = *.h *.c
+RECURSIVE              = YES
+USE_MDFILE_AS_MAINPAGE = README.md
+OPTIMIZE_OUTPUT_FOR_C  = YES
+EXTRACT_ALL            = YES
+EXTRACT_STATIC         = YES
+JAVADOC_AUTOBRIEF      = YES
+SOURCE_BROWSER         = YES
+GENERATE_HTML          = YES
+GENERATE_LATEX         = NO
+HAVE_DOT               = NO
+QUIET                  = YES
+WARN_IF_UNDOCUMENTED   = NO
+WARN_IF_INCOMPLETE_DOC = NO

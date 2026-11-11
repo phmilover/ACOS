@@ -11,6 +11,7 @@
  * если вывод не в терминал - например, в файл).
  */
 #include <errno.h>
+#include <limits.h>
 #include <poll.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -118,11 +119,13 @@ static void TermSize(int *cols, int *rows) {
     }
     // размер можно задать и явно - для записи кадров через script(1)
     const char *c = getenv("COLUMNS"), *r = getenv("LINES");
-    if (c && atoi(c) > 20) {
-        *cols = atoi(c);
+    long v = c ? strtol(c, NULL, 10) : 0;
+    if (v > 20 && v < 1000) {
+        *cols = (int)v;
     }
-    if (r && atoi(r) > 10) {
-        *rows = atoi(r);
+    v = r ? strtol(r, NULL, 10) : 0;
+    if (v > 10 && v < 1000) {
+        *rows = (int)v;
     }
 }
 
@@ -143,7 +146,7 @@ static int Visible(const char *s, int bytes, int maxCols, int *cut) {
             ++i;
             continue;
         }
-        if (((unsigned char)s[i] & 0xC0) != 0x80) {
+        if (((unsigned char)s[i] & 0xC0U) != 0x80U) {
             if (cols == maxCols) {
                 break;
             }
@@ -183,7 +186,7 @@ static void Row(const char *fmt, ...) {
 /// Дополняет строку пробелами до @p width видимых символов.
 static void PadTo(char *buf, int size, int width) {
     int n = (int)strlen(buf);
-    int cols = Visible(buf, n, 1 << 20, NULL);
+    int cols = Visible(buf, n, INT_MAX, NULL);
     while (cols < width && n < size - 1) {
         buf[n++] = ' ';
         ++cols;
@@ -233,8 +236,8 @@ static void PostText(int s, int p, char *buf, int size) {
         snprintf(buf, size, GREEN "► washing  " RESET BOLD "%s" RESET, car);
     } else if (pv->car > 0) {
         const char *next = pv->wait >= 0 && pv->wait < ln.stages ? ln.stage[pv->wait].name : "?";
-        snprintf(buf, size, YELLOW "‖ waiting  " RESET "%s" YELLOW "done, waits for %s" RESET,
-                 car, next);
+        snprintf(buf, size, YELLOW "‖ waiting  " RESET "%s" YELLOW "done, waits for %s" RESET, car,
+                 next);
     } else if (strcmp(pv->state, "busy") == 0) {
         snprintf(buf, size, CYAN "· getting ready" RESET);
     } else {
@@ -249,7 +252,7 @@ static void Render(void) {
     char clock[16], end[16], bar[256];
     FormatClock(ln.minute, clock, sizeof(clock));
 
-    const char *door = !ln.open     ? YELLOW "◌ waiting for clients" RESET
+    const char *door = !ln.open      ? YELLOW "◌ waiting for clients" RESET
                        : ln.stopping ? MAG "■ line stopped" RESET
                        : ln.closed   ? YELLOW "● entrance closed" RESET
                                      : GREEN "● entrance open" RESET;
@@ -282,10 +285,9 @@ static void Render(void) {
         char cars[256] = "";
         int n = 0;
         for (int i = 0; i < q->len && n < (int)sizeof(cars) - 40; ++i) {
-            n += snprintf(cars + n, sizeof(cars) - n, "  #%d " DIM "%.3s" RESET, q->car[i],
-                          q->program[i] >= 0 && q->program[i] < ln.programs
-                              ? ln.program[q->program[i]]
-                              : "");
+            n += snprintf(
+                cars + n, sizeof(cars) - n, "  #%d " DIM "%.3s" RESET, q->car[i],
+                q->program[i] >= 0 && q->program[i] < ln.programs ? ln.program[q->program[i]] : "");
         }
         if (sv->queue > 0) {
             const char *on = q->len >= sv->queue ? YELLOW "■" RESET : CYAN "■" RESET;
@@ -397,8 +399,8 @@ static int SnapLine(const char *line) {
     }
     PostView pv;
     if (sscanf(line, "P %d %d %11s %d %d %d %d %d %d %d", &s, &p, pv.state, &pv.online, &pv.car,
-               &pv.program, &pv.running, &pv.wait, &pv.ops, &pv.fails) == 10 && s >= 0 &&
-        s < MAX_STAGES && p >= 0 && p < MAX_POSTS) {
+               &pv.program, &pv.running, &pv.wait, &pv.ops, &pv.fails) == 10 &&
+        s >= 0 && s < MAX_STAGES && p >= 0 && p < MAX_POSTS) {
         ln.post[s][p] = pv;
         return 0;
     }
@@ -410,7 +412,8 @@ static void ConfigLine(const char *line) {
     char name[NAME_LEN + 4];
     StageView sv;
     if (sscanf(line, "STAGE %d %15s %d %d %d %d", &i, sv.name, &sv.posts, &sv.queue, &sv.tmin,
-               &sv.tmax) == 6 && i >= 0 && i < MAX_STAGES) {
+               &sv.tmax) == 6 &&
+        i >= 0 && i < MAX_STAGES) {
         ln.stage[i] = sv;
     } else if (sscanf(line, "PROGRAM %d %15s %d %n", &i, name, &len, &off) == 3 && i >= 0 &&
                i < MAX_PROGRAMS) {
@@ -479,7 +482,7 @@ int main(int argc, char **argv) {
         if (r < 0 && errno != EINTR) {
             break;
         }
-        if (n == 2 && r > 0 && (pf[1].revents & POLLIN)) {
+        if (n == 2 && r > 0 && pf[1].revents != 0) {
             char key;
             while (read(0, &key, 1) == 1) {
                 if (key == 'q' || key == 'Q') {
@@ -500,8 +503,10 @@ int main(int argc, char **argv) {
                     dirty = 1;
                 } else if (strncmp(line, "SNAP ", 5) == 0 || inSnap) {
                     inSnap = !SnapLine(line);
-                    ln.haveSnap |= !inSnap;
-                    dirty |= !inSnap;
+                    if (!inSnap) {
+                        ln.haveSnap = 1;
+                        dirty = 1;
+                    }
                 } else if (strncmp(line, "STOP ", 5) == 0) {
                     why = "stop";
                     quit = 1;

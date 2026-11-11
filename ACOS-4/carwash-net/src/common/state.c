@@ -4,6 +4,7 @@
 #include <string.h>
 #include <unistd.h>
 
+#include "soft_assert.h"
 #include "util.h"
 
 int StateInit(State *s, const Config *cfg) {
@@ -84,6 +85,10 @@ int StReserveCar(State *s) {
 }
 
 void StReleaseCar(State *s, int slot) {
+    if (!SOFT_ASSERT(slot >= 0 && slot < MAX_SLOTS && s->car[slot].state != CAR_FREE,
+                     "releasing a free car slot")) {
+        return;
+    }
     s->car[slot].state = CAR_FREE;
     s->car[slot].waitStage = -1;
     --s->active;
@@ -324,12 +329,14 @@ void StPostFree(State *s, int stage, int post) {
 
 void StBreak(State *s, int stage, int post, int repair) {
     PostSlot *ps = &s->post[stage][post];
+    SOFT_ASSERT(ps->state != POST_BROKEN, "broken post breaks again");
     ps->state = POST_BROKEN;
     ++ps->fails;
     POST_EVENT(s, stage, post, C_FAIL, "BREAKDOWN, repair takes %d min", repair);
 }
 
 void StRepair(State *s, int stage, int post) {
+    SOFT_ASSERT(s->post[stage][post].state == POST_BROKEN, "repairing a post that is not broken");
     s->post[stage][post].state = POST_IDLE;
     POST_EVENT(s, stage, post, C_FIX, "repaired, back to work");
 }

@@ -21,12 +21,10 @@
 Все команды - из папки `carwash-net`.
 
 ```bash
-make                                       # всё в bin/
+cmake -S . -B build && cmake --build build   # всё в bin/
 scripts/run.sh                             # сервер, все посты и источник машин на этом компьютере
 bin/cw-view 127.0.0.1 5050                 # во втором терминале: панель наблюдателя
 scripts/run.sh -c data/breakdowns.cfg -d 50   # другой сценарий, 50 мс на минуту модели
-make test                                  # сценарные тесты
-make asan && tests/run_tests.sh bin-asan   # те же тесты под ASan и UBSan
 ```
 
 Каждую программу можно запускать отдельно, в любом порядке, из разных терминалов и с разных
@@ -52,6 +50,28 @@ bin/cw-view -p 192.168.1.10 5050           # наблюдатель в виде 
 | `-l FILE` | журнал, по умолчанию `carwash.log` |
 | `-u` | без конца дня и без ограничения числа машин |
 | `-q` | события только в журнал, на экран - итоги |
+
+## Тесты, форматирование, clang-tidy, документация
+
+```bash
+cmake --build build --target check    # сценарные тесты (tests/run_tests.sh)
+cmake --build build --target asan     # те же тесты под ASan и UBSan (сборка в build-asan, bin-asan)
+cmake --build build --target format   # clang-format по .clang-format
+cmake --build build --target tidy     # clang-tidy по .clang-tidy
+cmake --build build --target docs     # Doxygen, открыть build/doxygen/html/index.html
+```
+
+Тесты запускают сервер и клиентов на 127.0.0.1 и проверяют коды выхода, журнал и вывод
+клиентов; их же запускает `ctest --test-dir build`. Компилятор собирает с
+`-Wall -Wextra -Wpedantic -Werror`, clang-tidy проходит без замечаний.
+
+Предусловия функций проверяет `SOFT_ASSERT` (`include/soft_assert.h`): при нарушении он пишет
+файл и строку в stderr, а программа продолжает работу, и журнал и итоги не теряются.
+Инварианты модели проверяет `StCheck` - это нарушения правил линии, они считаются в итогах.
+
+Для `format` и `tidy` нужны clang-format и clang-tidy: `brew install llvm` (CMake найдёт их в
+`/opt/homebrew/opt/llvm/bin`) или `apt install clang-format clang-tidy`. Для `docs` нужен
+doxygen. Если чего-то нет, цель напишет, что поставить.
 
 ## Подключение, отключение, остановка
 
@@ -113,6 +133,7 @@ src/cars.c      клиент - источник машин
 src/view.c      клиент-наблюдатель: панель и лента
 data/           сценарии
 tests/          run_tests.sh - сценарные тесты
+CMakeLists.txt  сборка и цели check, asan, format, tidy, docs
 scripts/        run.sh - запуск сервера и всех клиентов на одном компьютере
 ```
 

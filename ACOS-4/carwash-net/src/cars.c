@@ -41,11 +41,13 @@ static Outcome Handle(int r, const char *line) {
     char program[NAME_LEN + 4], status[16], who[24];
     if (strncmp(line, "STOP ", 5) == 0) {
         return GO_STOP;
-    } else if (sscanf(line, "OPEN %d", &minutes) == 1) {
+    }
+    if (sscanf(line, "OPEN %d", &minutes) == 1) {
         SessionSync(&ses, minutes);  // OPEN несёт текущую минуту: въезд мог открыться давно
         if (!isOpen) {
-            EVENT("entrance", C_COORD, "%s", minutes ? "the entrance is open, cars keep arriving"
-                                                      : "entrance opened, cars start arriving");
+            EVENT("entrance", C_COORD, "%s",
+                  minutes ? "the entrance is open, cars keep arriving"
+                          : "entrance opened, cars start arriving");
         }
         isOpen = 1;
     } else if (strcmp(line, "CLOSED") == 0) {
@@ -79,7 +81,7 @@ static Outcome Handle(int r, const char *line) {
  * @param minutes -1 - пока не откроется въезд (если он закрыт - до остановки)
  */
 static Outcome Pause(int minutes) {
-    long long until = minutes >= 0 ? NowNs() + (long long)minutes * ses.delayMs * 1000000LL : 0;
+    long long until = minutes >= 0 ? NowNs() + ((long long)minutes * ses.delayMs * 1000000LL) : 0;
     char line[LINE_MAX_LEN];
     for (;;) {
         int left = -1;
@@ -133,8 +135,8 @@ int main(int argc, char **argv) {
     int arrMin, arrMax, remaining, now, nextId, off;
     unsigned seed;
     ConfigDefaults(&cfg);
-    if (sscanf(line, "WELCOME cars %d %d %d %u %d %d %d %d %n", &arrMin, &arrMax, &remaining,
-               &seed, &ses.delayMs, &now, &nextId, &cfg.programs, &off) != 8 ||
+    if (sscanf(line, "WELCOME cars %d %d %d %u %d %d %d %d %n", &arrMin, &arrMax, &remaining, &seed,
+               &ses.delayMs, &now, &nextId, &cfg.programs, &off) != 8 ||
         cfg.programs < 1 || cfg.programs > MAX_PROGRAMS) {
         dprintf(2, "cw-cars: unexpected answer: %s\n", line);
         return 5;
@@ -169,8 +171,11 @@ int main(int argc, char **argv) {
         RngInit(&carRng, seed, 1000U + (unsigned)(nextId + sent));
         NetSend(ses.io.fd, "ARRIVE %d", StChooseProgram(&cfg, &carRng));
         ++sent;
-        if (remaining > 0 && --remaining == 0) {
-            NetSend(ses.io.fd, "CLOSE %d", sent);
+        if (remaining > 0) {
+            --remaining;
+            if (remaining == 0) {
+                NetSend(ses.io.fd, "CLOSE %d", sent);
+            }
         }
     }
     while (o == GO_ON) {

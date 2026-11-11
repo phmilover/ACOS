@@ -38,7 +38,7 @@ static Outcome Classify(int r, const char *line) {
 
 /// Ждёт @p minutes минут модели, следя за сервером. @p line - последняя строка.
 static Outcome Work(int minutes, char *line, int size) {
-    long long until = NowNs() + (long long)minutes * ses.delayMs * 1000000LL;
+    long long until = NowNs() + ((long long)minutes * ses.delayMs * 1000000LL);
     for (;;) {
         int left = (int)((until - NowNs()) / 1000000LL);
         if (left <= 0) {
@@ -92,7 +92,7 @@ int main(int argc, char **argv) {
     SessionSync(&ses, now);
     snprintf(who, sizeof(who), "%s.%d", stage, num);
     Rng rng;
-    RngInit(&rng, seed, 100U + (unsigned)(stageNo * MAX_POSTS + num - 1));
+    RngInit(&rng, seed, 100U + (unsigned)((stageNo * MAX_POSTS) + num - 1));
     dprintf(1, "cw-post: post %s is online at %s:%d (pid %d), operation %d-%d min, %s\n", who,
             argv[1], port, (int)getpid(), tmin, tmax,
             open ? "the line is working" : "waiting for the entrance to open");
@@ -144,8 +144,7 @@ int main(int argc, char **argv) {
     if (o == GO_STOP) {
         code = SessionStopped(&ses, line);
     } else if (o == GO_USER) {
-        dprintf(1, "cw-post: %s leaves the line (Ctrl+C); start it again to bring it back\n",
-                who);
+        dprintf(1, "cw-post: %s leaves the line (Ctrl+C); start it again to bring it back\n", who);
     } else {
         dprintf(2, "cw-post: the server is gone\n");
         code = 5;

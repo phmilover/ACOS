@@ -50,7 +50,7 @@ void SessionSync(Session *s, int minute) {
 }
 
 int SessionRecv(Session *s, char *line, int size, int timeoutMs) {
-    long long deadline = timeoutMs >= 0 ? NowNs() + (long long)timeoutMs * 1000000LL : 0;
+    long long deadline = timeoutMs >= 0 ? NowNs() + ((long long)timeoutMs * 1000000LL) : 0;
     for (;;) {
         // флаг - до ожидания: сигнал мог прийти вне poll, и тогда EINTR не будет
         if (gotInterrupt) {

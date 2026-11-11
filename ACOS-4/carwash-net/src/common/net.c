@@ -14,6 +14,7 @@
 #include <unistd.h>
 
 #include "config.h"
+#include "soft_assert.h"
 #include "util.h"
 
 int NetParsePort(const char *s, int *port) {
@@ -78,7 +79,7 @@ int NetConnect(const char *host, int port, int seconds, char *err, int errSize) 
         snprintf(err, errSize, "cannot resolve '%s': %s", host, gai_strerror(rc));
         return -1;
     }
-    long long deadline = NowNs() + (long long)seconds * 1000000000LL;
+    long long deadline = NowNs() + ((long long)seconds * 1000000000LL);
     int lastErr = 0;
     for (;;) {
         for (struct addrinfo *a = list; a; a = a->ai_next) {
@@ -164,7 +165,7 @@ int LineNext(LineConn *c, char *out, int size) {
 }
 
 int LineWait(LineConn *c, char *out, int size, int timeoutMs) {
-    long long deadline = timeoutMs >= 0 ? NowNs() + (long long)timeoutMs * 1000000LL : 0;
+    long long deadline = timeoutMs >= 0 ? NowNs() + ((long long)timeoutMs * 1000000LL) : 0;
     for (;;) {
         if (LineNext(c, out, size)) {
             return 1;
@@ -206,7 +207,7 @@ int NetSend(int fd, const char *fmt, ...) {
     if (n < 0) {
         return -1;
     }
-    if (n >= LINE_MAX_LEN) {
+    if (!SOFT_ASSERT(n < LINE_MAX_LEN, "protocol line is too long, it is cut")) {
         n = LINE_MAX_LEN - 1;
     }
     line[n++] = '\n';
